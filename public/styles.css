@@ -1,0 +1,108 @@
+/* 自定义样式增强 */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #334155;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #475569;
+}
+
+/* Diff 语法行级渲染高亮 */
+.diff-line-add {
+  background-color: rgba(16, 185, 129, 0.15);
+  color: #6ee7b7;
+  display: block;
+  padding: 0 4px;
+}
+.diff-line-del {
+  background-color: rgba(244, 63, 94, 0.15);
+  color: #fda4af;
+  display: block;
+  padding: 0 4px;
+}
+.diff-line-hunk {
+  background-color: rgba(99, 102, 241, 0.12);
+  color: #a5b4fc;
+  font-weight: 600;
+  display: block;
+  padding: 2px 4px;
+  margin: 4px 0;
+  border-radius: 2px;
+}
+
+/* Markdown Prose 样式精修 */
+#mentor-article h1, #mentor-article h2, #mentor-article h3 {
+  color: #f1f5f9;
+  font-weight: 700;
+  margin-top: 1.5em;
+  margin-bottom: 0.6em;
+  border-bottom: 1px solid rgba(51, 65, 85, 0.4);
+  padding-bottom: 0.3em;
+}
+#mentor-article h1 { font-size: 1.25rem; }
+#mentor-article h2 { font-size: 1.1rem; }
+#mentor-article h3 { font-size: 0.95rem; }
+
+#mentor-article p {
+  margin-bottom: 1em;
+  line-height: 1.7;
+}
+
+#mentor-article ul, #mentor-article ol {
+  margin-left: 1.25rem;
+  margin-bottom: 1em;
+  list-style-type: disc;
+}
+
+#mentor-article blockquote {
+  border-left: 3px solid #6366f1;
+  background: rgba(99, 102, 241, 0.08);
+  padding: 0.5rem 1rem;
+  border-radius: 0 4px 4px 0;
+  margin: 1em 0;
+  color: #cbd5e1;
+}
+
+#mentor-article pre {
+  background: #0f172a;
+  border: 1px solid #1e293b;
+  border-radius: 0.5rem;
+  padding: 0.85rem;
+  margin: 1em 0;
+  overflow-x: auto;
+}
+
+#mentor-article code:not(pre code) {
+  background: #1e293b;
+  color: #38bdf8;
+  padding: 0.15rem 0.35rem;
+  border-radius: 0.25rem;
+  font-family: monospace;
+  font-size: 0.85em;
+}
+
+#mentor-article table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1em 0;
+  font-size: 0.825rem;
+}
+
+#mentor-article th, #mentor-article td {
+  border: 1px solid #334155;
+  padding: 0.5rem 0.75rem;
+  text-align: left;
+}
+
+#mentor-article th {
+  background: #1e293b;
+  font-weight: 600;
+  color: #e2e8f0;
+}

@@ -1,0 +1,14 @@
+{
+  "name": "tech-mentor-studio",
+  "version": "0.1.0",
+  "description": "Visual Local-First Workbench for Code Walking and AI Tech Mentoring",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.21.2"
+  }
+}

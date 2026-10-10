@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="zh-CN" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Tech Mentor Studio | 本地代码内化与导师工作台</title>
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            brand: {
+              500: '#6366f1',
+              600: '#4f46e5',
+            }
+          }
+        }
+      }
+    }
+  </script>
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <!-- Marked.js -->
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <!-- Highlight.js -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+  <!-- Mermaid.js -->
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body class="bg-[#0b0f19] text-slate-200 font-sans h-screen flex flex-col overflow-hidden antialiased select-none">
+
+  <!-- 顶部导航栏 -->
+  <header class="h-14 border-b border-slate-800 bg-slate-900/80 backdrop-blur px-4 flex items-center justify-between shrink-0 z-20">
+    <div class="flex items-center gap-3">
+      <div class="w-8 h-8 rounded-lg bg-indigo-600 flex items-center justify-center shadow-lg shadow-indigo-500/20">
+        <i data-lucide="compass" class="w-5 h-5 text-white"></i>
+      </div>
+      <div>
+        <h1 class="text-sm font-semibold tracking-wide flex items-center gap-2">
+          Tech Mentor Studio
+          <span class="text-[10px] px-1.5 py-0.5 rounded bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 font-mono">P0/P1 UPGRADED</span>
+        </h1>
+        <p class="text-[11px] text-slate-400">本地代码内化 · 架构带读 · 深度学习工作台</p>
+      </div>
+    </div>
+
+    <!-- 顶栏状态与模型选择 -->
+    <div class="flex items-center gap-3">
+      <!-- 项目事实源指示器 -->
+      <div id="facts-badge" class="hidden items-center gap-1.5 bg-indigo-950/60 text-indigo-300 border border-indigo-700/50 px-2 py-0.5 rounded text-[11px]">
+        <i data-lucide="file-check" class="w-3.5 h-3.5 text-indigo-400"></i>
+        <span>已挂载项目规范 (SSOT)</span>
+      </div>
+
+      <div class="flex items-center gap-2 bg-slate-800/80 px-2.5 py-1 rounded-md border border-slate-700/60 text-xs">
+        <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+        <span class="text-slate-400">上游代理:</span>
+        <span class="font-mono text-emerald-400 font-medium">8317 就绪</span>
+      </div>
+
+      <div class="flex items-center gap-2 bg-slate-800/80 px-2 py-1 rounded-md border border-slate-700/60 text-xs">
+        <i data-lucide="cpu" class="w-3.5 h-3.5 text-indigo-400"></i>
+        <select id="model-select" class="bg-transparent border-none text-slate-200 focus:outline-none cursor-pointer text-xs">
+          <option value="claude-sonnet-4-6">Claude Sonnet 4.6 (深度思考带读 - 推荐)</option>
+          <option value="gemini-3.1-flash-lite-preview">Gemini 3.1 Flash (极速响应)</option>
+        </select>
+      </div>
+
+      <button id="btn-refresh" class="p-1.5 rounded hover:bg-slate-800 text-slate-400 hover:text-slate-200 transition" title="刷新所有仓库">
+        <i data-lucide="refresh-cw" class="w-4 h-4"></i>
+      </button>
+    </div>
+  </header>
+
+  <!-- 主体工作区：三栏布局 -->
+  <main class="flex-1 flex overflow-hidden">
+
+    <!-- 栏 1：仓库列表 (左栏 280px) -->
+    <aside class="w-72 border-r border-slate-800 bg-[#0d1322] flex flex-col shrink-0">
+      <div class="p-3 border-b border-slate-800/80 flex items-center justify-between">
+        <span class="text-xs font-semibold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
+          <i data-lucide="folders" class="w-3.5 h-3.5"></i>
+          本地代码仓库 (<span id="repo-count">0</span>)
+        </span>
+        <button id="btn-add-repo" class="text-xs text-indigo-400 hover:text-indigo-300 flex items-center gap-1 p-1 hover:bg-slate-800 rounded">
+          <i data-lucide="plus" class="w-3.5 h-3.5"></i> 添加
+        </button>
+      </div>
+
+      <!-- 搜索框 -->
+      <div class="p-2 border-b border-slate-800/60">
+        <div class="relative">
+          <i data-lucide="search" class="w-3.5 h-3.5 absolute left-2.5 top-2.5 text-slate-500"></i>
+          <input type="text" id="repo-search" placeholder="筛选项目..." class="w-full bg-slate-900 border border-slate-800 rounded px-2.5 py-1.5 pl-8 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-indigo-500/60">
+        </div>
+      </div>
+
+      <!-- 仓库滚动列表 -->
+      <div id="repo-list" class="flex-1 overflow-y-auto divide-y divide-slate-800/40 p-1.5 space-y-1">
+        <div class="text-xs text-slate-500 text-center py-8">正在扫描本地 Git 仓库...</div>
+      </div>
+    </aside>
+
+    <!-- 栏 2：提交时间线与 Diff 查看器 (中栏 480px) -->
+    <section class="w-[480px] border-r border-slate-800 bg-[#0e1628] flex flex-col shrink-0">
+      
+      <!-- 项目信息条 -->
+      <div class="p-3 border-b border-slate-800 bg-slate-900/40 flex items-center justify-between">
+        <div class="truncate">
+          <div class="flex items-center gap-2">
+            <h2 id="active-repo-name" class="text-sm font-semibold text-slate-100 truncate">未选择项目</h2>
+            <span id="active-repo-branch" class="text-[10px] px-1.5 py-0.2 rounded bg-slate-800 text-slate-300 border border-slate-700/60 font-mono hidden">main</span>
+          </div>
+          <p id="active-repo-path" class="text-[11px] text-slate-500 truncate mt-0.5 select-text font-mono">请从左侧选择仓库</p>
+        </div>
+      </div>
+
+      <!-- 提交列表 / 工作区切换栏 -->
+      <div class="h-44 border-b border-slate-800 flex flex-col shrink-0">
+        <div class="px-3 py-1.5 bg-slate-900/60 border-b border-slate-800/60 text-[11px] font-medium text-slate-400 flex items-center justify-between">
+          <span>改动历史 (点击切换查看)</span>
+          <span class="text-[10px] text-slate-500">最新 30 条</span>
+        </div>
+        <div id="commit-list" class="flex-1 overflow-y-auto divide-y divide-slate-800/30 text-xs">
+          <div class="text-slate-500 text-center py-6 text-xs">从左侧选择项目后查看变动</div>
+        </div>
+      </div>
+
+      <!-- P0/P1: 变动文件过滤小工具条 -->
+      <div class="px-3 py-2 bg-slate-900/80 border-b border-slate-800 flex flex-col gap-1.5">
+        <div class="flex items-center justify-between">
+          <div class="flex items-center gap-2 truncate">
+            <i data-lucide="file-diff" class="w-3.5 h-3.5 text-indigo-400"></i>
+            <span id="diff-target-label" class="text-xs font-mono font-medium text-slate-300 truncate">代码差异</span>
+          </div>
+          <span id="diff-stat-badge" class="text-[10px] px-2 py-0.5 rounded bg-slate-800 font-mono text-slate-400 border border-slate-700">0 行变动</span>
+        </div>
+        <!-- 文件过滤标签流 -->
+        <div id="file-filter-chips" class="flex items-center gap-1.5 overflow-x-auto py-1 text-[11px] no-scrollbar">
+          <span class="text-slate-500 text-[10px]">变动文件:</span>
+          <button class="chip-active px-2 py-0.5 rounded text-[10px] font-mono bg-indigo-600 text-white shrink-0">全部文件</button>
+        </div>
+      </div>
+
+      <!-- Diff 内容滚动展示 -->
+      <div class="flex-1 overflow-y-auto bg-[#0a0e17] p-2 select-text font-mono text-[11px]">
+        <pre id="diff-content" class="text-slate-300 whitespace-pre-wrap leading-relaxed"><span class="text-slate-600">// 差异查看器就绪</span></pre>
+      </div>
+    </section>
+
+    <!-- 栏 3：Tech Mentor 深度导师多轮对话看板 (右栏 自适应) -->
+    <section class="flex-1 bg-[#0b0f19] flex flex-col overflow-hidden">
+      
+      <!-- 快捷动作卡片条 -->
+      <div class="p-3 border-b border-slate-800 bg-slate-900/60 flex items-center justify-between flex-wrap gap-2">
+        <div class="flex items-center gap-2 flex-wrap">
+          <span class="text-xs font-semibold text-slate-300 flex items-center gap-1.5 mr-1">
+            <i data-lucide="sparkles" class="w-3.5 h-3.5 text-amber-400"></i>
+            一键精读:
+          </span>
+          <button id="btn-walkthrough" class="btn-action bg-indigo-600/20 text-indigo-300 hover:bg-indigo-600/30 border border-indigo-500/30 px-2.5 py-1 rounded text-xs flex items-center gap-1.5 transition">
+            <i data-lucide="layout-grid" class="w-3 h-3"></i> 🏛️ 四阶全景带读
+          </button>
+          <button id="btn-anatomy" class="btn-action bg-purple-600/20 text-purple-300 hover:bg-purple-600/30 border border-purple-500/30 px-2.5 py-1 rounded text-xs flex items-center gap-1.5 transition">
+            <i data-lucide="code" class="w-3 h-3"></i> 🔬 核心代码实相
+          </button>
+          <button id="btn-pitfalls" class="btn-action bg-rose-600/20 text-rose-300 hover:bg-rose-600/30 border border-rose-500/30 px-2.5 py-1 rounded text-xs flex items-center gap-1.5 transition">
+            <i data-lucide="shield-alert" class="w-3 h-3"></i> ⚠️ 隐蔽暗桩考查
+          </button>
+          <button id="btn-drill" class="btn-action bg-amber-600/20 text-amber-300 hover:bg-amber-600/30 border border-amber-500/30 px-2.5 py-1 rounded text-xs flex items-center gap-1.5 transition">
+            <i data-lucide="help-circle" class="w-3 h-3"></i> 💡 苏格拉底考题
+          </button>
+        </div>
+
+        <div class="flex items-center gap-2">
+          <button id="btn-copy-mentor" class="text-xs text-slate-400 hover:text-slate-200 px-2 py-1 hover:bg-slate-800 rounded border border-slate-700/60 flex items-center gap-1 transition" title="复制讲解为 Markdown">
+            <i data-lucide="copy" class="w-3.5 h-3.5"></i> 复制笔记
+          </button>
+          <button id="btn-clear-mentor" class="text-xs text-slate-500 hover:text-slate-300 p-1 hover:bg-slate-800 rounded" title="清空导师对话">
+            <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+          </button>
+        </div>
+      </div>
+
+      <!-- 状态指示条 -->
+      <div id="mentor-status-bar" class="px-4 py-1.5 bg-slate-900 border-b border-slate-800/80 text-xs text-indigo-400 font-mono flex items-center justify-between hidden">
+        <span class="flex items-center gap-2">
+          <i data-lucide="loader-2" class="w-3.5 h-3.5 animate-spin"></i>
+          <span id="mentor-status-text">分析中...</span>
+        </span>
+        <button id="btn-stop-analyze" class="text-[11px] text-rose-400 hover:underline">终止生成</button>
+      </div>
+
+      <!-- P1: 导师多轮对话时间线容器 -->
+      <div id="mentor-chat-stream" class="flex-1 overflow-y-auto p-6 space-y-6 select-text">
+        <div id="mentor-empty-state" class="h-full flex flex-col items-center justify-center text-center p-8 text-slate-500">
+          <div class="w-12 h-12 rounded-2xl bg-indigo-500/10 flex items-center justify-center mb-3 text-indigo-400">
+            <i data-lucide="graduation-cap" class="w-6 h-6"></i>
+          </div>
+          <h3 class="text-sm font-semibold text-slate-300">专属技术导师就绪</h3>
+          <p class="text-xs text-slate-400 max-w-sm mt-1 leading-relaxed">
+            已挂载项目事实源与防噪音过滤。点击上方【快捷精读】或在下方提问。导师将结合系统全局约束深度带读，并支持连续多轮追问。
+          </p>
+        </div>
+      </div>
+
+      <!-- 底部多轮提问输入框 -->
+      <div class="p-3 border-t border-slate-800 bg-slate-900/60 shrink-0">
+        <form id="mentor-form" class="flex gap-2">
+          <input type="text" id="mentor-input" placeholder="针对当前改动继续多轮追问... (例如：刚才提到的第 31 行函数，在极端高并发下如何应对？)" class="flex-1 bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-indigo-500">
+          <button type="submit" id="btn-submit-prompt" class="bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-lg text-xs font-medium flex items-center gap-1.5 transition shrink-0">
+            <i data-lucide="send" class="w-3.5 h-3.5"></i>
+            追问导师
+          </button>
+        </form>
+      </div>
+
+    </section>
+
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>
