@@ -272,7 +272,16 @@ async function fetchDiff(repoId, target) {
     statBadge.textContent = data.statText ? data.statText.split('\n').pop().trim() : '0 文件';
 
     if (!data.diffText || data.diffText.trim() === '') {
-      diffEl.innerHTML = '<span class="text-slate-500">// 该目标下没有文件内容差异</span>';
+      diffEl.innerHTML = `
+        <div class="p-6 text-center text-slate-500 space-y-2">
+          <div class="text-amber-400 text-sm font-medium">✨ 当前目标没有检测到代码差异</div>
+          <p class="text-xs text-slate-400 max-w-xs mx-auto leading-relaxed">
+            ${target === 'working-tree' 
+              ? '当前工作区非常干净，没有未提交的代码改动。请在上方选择一条具体的【历史提交 (Commit)】，让导师带读已提交的代码！' 
+              : '该提交没有文本文件变动。请选择其他提交查看。'}
+          </p>
+        </div>
+      `;
       return;
     }
 

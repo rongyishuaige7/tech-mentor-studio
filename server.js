@@ -322,6 +322,48 @@ app.get('/api/repos/:repoId/commits', async (req, res) => {
   }
 });
 
+// 提取工作区变动 (包括跟踪文件的修改与全新未跟踪文件 ??)
+async function getWorkingTreeDiff(repoPath) {
+  let diffText = '';
+  try {
+    diffText = await runGit('diff HEAD', repoPath) || await runGit('diff', repoPath) || await runGit('diff --cached', repoPath);
+  } catch {}
+
+  // 补全新增但尚未被 Git 跟踪的文件 (Untracked ??)
+  try {
+    const statusOut = await runGit('status --porcelain', repoPath);
+    if (statusOut) {
+      const lines = statusOut.split('\n');
+      for (const line of lines) {
+        if (line.startsWith('?? ')) {
+          let relPath = line.slice(3).trim();
+          if (relPath.startsWith('"') && relPath.endsWith('"')) {
+            relPath = relPath.slice(1, -1);
+          }
+          if (isNoiseFile(relPath)) continue;
+
+          const fullPath = path.join(repoPath, relPath);
+          if (fs.existsSync(fullPath) && fs.statSync(fullPath).isFile()) {
+            const size = fs.statSync(fullPath).size;
+            if (size > 0 && size < 300000) {
+              try {
+                const content = fs.readFileSync(fullPath, 'utf-8');
+                const fileLines = content.split('\n');
+                diffText += `\ndiff --git a/${relPath} b/${relPath}\nnew file mode 100644\n--- /dev/null\n+++ b/${relPath}\n@@ -0,0 +1,${fileLines.length} @@\n`;
+                for (const fl of fileLines) {
+                  diffText += '+' + fl + '\n';
+                }
+              } catch {}
+            }
+          }
+        }
+      }
+    }
+  } catch {}
+
+  return diffText;
+}
+
 // 获取 Diff 与文件结构化索引
 app.get('/api/repos/:repoId/diff', async (req, res) => {
   try {
@@ -333,13 +375,9 @@ app.get('/api/repos/:repoId/diff', async (req, res) => {
     let summaryText = '';
 
     if (target === 'working-tree') {
-      diffText = await runGit('diff HEAD', repoPath);
-      statText = await runGit('diff --stat HEAD', repoPath);
-      summaryText = await runGit('diff --compact-summary HEAD', repoPath);
-      if (!diffText) {
-        diffText = await runGit('diff', repoPath) || await runGit('diff --cached', repoPath);
-        statText = await runGit('diff --stat', repoPath) || await runGit('diff --cached --stat', repoPath);
-      }
+      diffText = await getWorkingTreeDiff(repoPath);
+      statText = await runGit('diff --stat HEAD', repoPath) || await runGit('diff --stat', repoPath);
+      summaryText = await runGit('diff --compact-summary HEAD', repoPath) || await runGit('diff --compact-summary', repoPath);
     } else {
       diffText = await runGit(`show -p ${target}`, repoPath);
       statText = await runGit(`show --stat ${target}`, repoPath);
@@ -408,7 +446,7 @@ app.post('/api/mentor/analyze', async (req, res) => {
     let commitInfo = '';
 
     if (target === 'working-tree') {
-      rawDiff = await runGit('diff HEAD', repoPath) || await runGit('diff', repoPath);
+      rawDiff = await getWorkingTreeDiff(repoPath);
       commitInfo = '【当前工作区未提交修改 (Working Tree)】';
     } else {
       commitInfo = await runGit(`log -1 --pretty=format:"提交: %h - %s (%an, %ar)" ${target}`, repoPath);
@@ -416,7 +454,10 @@ app.post('/api/mentor/analyze', async (req, res) => {
     }
 
     if (!rawDiff || rawDiff.trim() === '') {
-      sendEvent({ type: 'error', message: '未检测到代码变动（Diff 为空）。' });
+      sendEvent({ 
+        type: 'error', 
+        message: '当前选中的目标没有检测到代码变动（Diff 为空）。\n👉 如果当前工作区代码是干净的，请在左侧列表中点击具体的【历史提交 (Commit)】，让导师为你带读已提交的代码！' 
+      });
       res.end();
       return;
     }
