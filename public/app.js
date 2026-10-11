@@ -32,7 +32,68 @@ document.addEventListener('DOMContentLoaded', () => {
   lucide.createIcons();
   setupEventListeners();
   loadRepos();
+  loadKeeperStats();
+  setInterval(loadKeeperStats, 15000);
 });
+
+// 0. 加载 CPA / Keeper 实时统计与配额
+async function loadKeeperStats() {
+  const textEl = document.getElementById('keeper-token-text');
+  if (!textEl) return;
+
+  try {
+    const res = await fetch('/api/tokens/keeper-stats');
+    const data = await res.json();
+    if (!data.success) {
+      textEl.textContent = 'CPA 8317 就绪';
+      return;
+    }
+
+    const { stats, rateLimits } = data;
+    const formatK = (num) => {
+      if (!num) return '0';
+      if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
+      if (num >= 1000) return (num / 1000).toFixed(1) + 'k';
+      return String(num);
+    };
+
+    let parts = [];
+    if (stats.antigravity && stats.antigravity.tokens > 0) {
+      parts.push(`AGY: ${formatK(stats.antigravity.tokens)}`);
+    }
+    if (stats.codex && stats.codex.tokens > 0) {
+      parts.push(`Codex: ${formatK(stats.codex.tokens)}`);
+    }
+
+    const primaryLimit = (rateLimits || []).find(r => r.label === '5h');
+    if (primaryLimit) {
+      parts.push(`5h: ${primaryLimit.remainingPercent}%`);
+    }
+
+    textEl.textContent = parts.length > 0 ? parts.join(' · ') : 'CPA 8317 就绪';
+  } catch (err) {
+    textEl.textContent = 'CPA 8317 就绪';
+  }
+}
+
+function renderCommitPresets(presets) {
+  const container = document.getElementById('commit-presets-bar');
+  if (!container) return;
+  if (!presets || presets.length === 0) {
+    container.innerHTML = '';
+    return;
+  }
+  container.innerHTML = presets.map(p => `
+    <button onclick="selectTarget('${p.hash}')" 
+            class="px-1.5 py-0.5 rounded text-[10px] font-mono transition border ${
+              activeTarget === p.hash 
+                ? 'bg-indigo-600 border-indigo-500 text-white font-medium' 
+                : 'bg-slate-800 border-slate-700/60 text-slate-400 hover:text-slate-200 hover:bg-slate-700/60'
+            }" title="${escapeHtml(p.msg)}">
+      ${escapeHtml(p.shortHash)}
+    </button>
+  `).join('');
+}
 
 function setupEventListeners() {
   document.getElementById('btn-refresh').addEventListener('click', loadRepos);
@@ -185,10 +246,17 @@ async function selectRepo(repo) {
     const data = await res.json();
     if (!data.success) throw new Error(data.error);
 
+    renderCommitPresets(data.presets || []);
     renderCommitList(data.commits);
 
     if (data.commits.length > 0) {
-      selectTarget(data.commits[0].hash);
+      // 💡 智能默认选择：如果工作区干净 (dirtyCount == 0)，直接选择第一条真实提交进行展示
+      if (data.dirtyCount === 0) {
+        const latestRealCommit = data.commits.find(c => !c.isWorkingTree);
+        selectTarget(latestRealCommit ? latestRealCommit.hash : data.commits[0].hash);
+      } else {
+        selectTarget(data.commits[0].hash);
+      }
     }
   } catch (err) {
     commitListEl.innerHTML = `<div class="text-xs text-rose-400 text-center py-4">读取提交失败: ${err.message}</div>`;
@@ -236,7 +304,6 @@ window.selectTarget = (targetHash) => {
   activeTarget = targetHash;
   currentFocusFile = null;
   clearMentorSession();
-  const commitListEl = document.getElementById('commit-list');
   if (activeRepo) {
     fetchDiff(activeRepo.id, targetHash);
   }
@@ -248,10 +315,13 @@ async function fetchDiff(repoId, target) {
   diffEl.innerHTML = '<span class="text-slate-500">正在生成差异对比...</span>';
 
   document.getElementById('diff-target-label').textContent = 
-    target === 'working-tree' ? '当前未提交变动 (Working Tree)' : `提交 ${target.slice(0, 8)}`;
+    target === 'working-tree' ? '当前未提交变动 (Working Tree)' : 
+    target.startsWith('range:') ? `聚合区间 ${target.slice(6)}` :
+    target.includes('..') ? `区间对比 ${target}` :
+    `提交 ${target.slice(0, 8)}`;
 
   try {
-    const res = await fetch(`/api/repos/${repoId}/diff?target=${target}`);
+    const res = await fetch(`/api/repos/${repoId}/diff?target=${encodeURIComponent(target)}`);
     const data = await res.json();
     if (!data.success) throw new Error(data.error);
 
@@ -272,21 +342,41 @@ async function fetchDiff(repoId, target) {
     statBadge.textContent = data.statText ? data.statText.split('\n').pop().trim() : '0 文件';
 
     if (!data.diffText || data.diffText.trim() === '') {
-      diffEl.innerHTML = `
-        <div class="p-6 text-center text-slate-500 space-y-2">
-          <div class="text-amber-400 text-sm font-medium">✨ 当前目标没有检测到代码差异</div>
-          <p class="text-xs text-slate-400 max-w-xs mx-auto leading-relaxed">
-            ${target === 'working-tree' 
-              ? '当前工作区非常干净，没有未提交的代码改动。请在上方选择一条具体的【历史提交 (Commit)】，让导师带读已提交的代码！' 
-              : '该提交没有文本文件变动。请选择其他提交查看。'}
-          </p>
-        </div>
-      `;
+      if (data.isCleanWorkingTree && data.fallbackHead) {
+        diffEl.innerHTML = `
+          <div class="p-8 text-center text-slate-400 space-y-3 bg-slate-900/40 rounded-xl border border-slate-800 m-4">
+            <div class="w-10 h-10 rounded-full bg-emerald-500/10 text-emerald-400 flex items-center justify-center mx-auto">
+              <i data-lucide="check-circle-2" class="w-5 h-5"></i>
+            </div>
+            <div class="text-emerald-400 text-sm font-semibold">✨ 当前工作区已全部提交 (工作区干净)</div>
+            <p class="text-xs text-slate-400 max-w-sm mx-auto leading-relaxed">
+              没有未暂存的代码改动。可直接查看最新提交 [${data.fallbackHead.shortHash}]，或点击上方快捷带读让导师剖析最新提交。
+            </p>
+            <div class="pt-2">
+              <button onclick="selectTarget('${data.fallbackHead.hash}')" class="px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-medium transition shadow shadow-indigo-600/30 flex items-center gap-1.5 mx-auto">
+                <i data-lucide="git-commit" class="w-3.5 h-3.5"></i>
+                一键查看最新提交 [${data.fallbackHead.shortHash}]
+              </button>
+            </div>
+          </div>
+        `;
+        lucide.createIcons();
+      } else {
+        diffEl.innerHTML = `
+          <div class="p-6 text-center text-slate-500 space-y-2">
+            <div class="text-amber-400 text-sm font-medium">✨ 当前目标没有检测到代码差异</div>
+            <p class="text-xs text-slate-400 max-w-xs mx-auto leading-relaxed">
+              ${target === 'working-tree' 
+                ? '当前工作区干净，无未提交变动。请在上方选择一条历史提交 (Commit) 查看！' 
+                : '该提交没有文本文件变动或为无修改合并。请选择其他提交查看。'}
+            </p>
+          </div>
+        `;
+      }
       return;
     }
 
     renderActiveDiff();
-  } catch (err) {
     diffEl.innerHTML = `<span class="text-rose-400">获取 Diff 失败: ${err.message}</span>`;
   }
 }
@@ -448,6 +538,7 @@ async function startMentorAnalysis(mode, customPrompt = '', resetSession = false
 
   const article = document.getElementById(bubbleId);
   let currentTurnMarkdown = '';
+  let currentTurnUsage = null;
 
   const payload = {
     repoPath: activeRepo.path,
@@ -492,11 +583,28 @@ async function startMentorAnalysis(mode, customPrompt = '', resetSession = false
             currentTurnMarkdown += event.text;
             article.innerHTML = marked.parse(currentTurnMarkdown);
             chatStream.scrollTop = chatStream.scrollHeight;
+          } else if (event.type === 'usage') {
+            currentTurnUsage = event.usage;
           } else if (event.type === 'error') {
             currentTurnMarkdown += `\n\n> ⚠️ **错误**: ${event.message}`;
             article.innerHTML = marked.parse(currentTurnMarkdown);
           } else if (event.type === 'finished' || event.type === 'done') {
             statusBar.classList.add('hidden');
+            if (currentTurnUsage) {
+              const usageHtml = `
+                <div class="mt-4 pt-3 border-t border-slate-800/80 flex items-center justify-between text-[11px] text-slate-500 font-mono">
+                  <span class="flex items-center gap-1.5">
+                    <span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+                    本次分析消耗: <strong class="text-indigo-300 font-semibold">${currentTurnUsage.total_tokens || 0}</strong> tokens
+                    <span class="text-slate-600">(输入: ${currentTurnUsage.prompt_tokens || 0}, 输出: ${currentTurnUsage.completion_tokens || 0})</span>
+                  </span>
+                  <span class="text-slate-500">CPA 代理网关直连</span>
+                </div>
+              `;
+              article.innerHTML = marked.parse(currentTurnMarkdown) + usageHtml;
+            } else {
+              article.innerHTML = marked.parse(currentTurnMarkdown);
+            }
             postProcessArticle(article);
 
             // 存入多轮历史
@@ -504,6 +612,9 @@ async function startMentorAnalysis(mode, customPrompt = '', resetSession = false
               conversationHistory.push({ role: 'user', content: customPrompt });
             }
             conversationHistory.push({ role: 'assistant', content: currentTurnMarkdown });
+
+            // 刷新顶栏 Token 用量与配额
+            loadKeeperStats();
           }
         } catch {}
       }

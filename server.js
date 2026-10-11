@@ -284,6 +284,96 @@ app.post('/api/repos/add', async (req, res) => {
   }
 });
 
+const KEEPER_DB_PATH = '/opt/homebrew/var/cpa-usage-keeper/app.db';
+
+async function getKeeperTokenStats() {
+  if (!fs.existsSync(KEEPER_DB_PATH)) return null;
+  try {
+    const todayPrefix = new Date().toISOString().slice(0, 10);
+    const tokensOut = await execAsync(`sqlite3 ${KEEPER_DB_PATH} "
+      SELECT COALESCE(ui.provider, 'other'), COALESCE(ui.name, 'unknown'), SUM(s.total_tokens), SUM(s.request_count)
+      FROM usage_overview_daily_stats s
+      LEFT JOIN usage_identities ui ON ui.identity = s.auth_index
+      WHERE s.bucket_start LIKE '${todayPrefix}%'
+      GROUP BY ui.provider;
+    "`);
+
+    const stats = {
+      today: todayPrefix,
+      antigravity: { tokens: 0, requests: 0 },
+      codex: { tokens: 0, requests: 0 },
+      claude: { tokens: 0, requests: 0 }
+    };
+
+    if (tokensOut.stdout) {
+      for (const line of tokensOut.stdout.trim().split('\n').filter(Boolean)) {
+        const [provider, name, totalTokens, reqCount] = line.split('|');
+        const p = (provider || '').toLowerCase();
+        const tCount = parseInt(totalTokens || '0', 10);
+        const rCount = parseInt(reqCount || '0', 10);
+        if (p.includes('antigravity') || p.includes('gemini')) {
+          stats.antigravity.tokens += tCount;
+          stats.antigravity.requests += rCount;
+        } else if (p.includes('codex') || p.includes('openai')) {
+          stats.codex.tokens += tCount;
+          stats.codex.requests += rCount;
+        } else if (p.includes('claude')) {
+          stats.claude.tokens += tCount;
+          stats.claude.requests += rCount;
+        }
+      }
+    }
+
+    const quotaOut = await execAsync(`sqlite3 ${KEEPER_DB_PATH} "
+      WITH latest_account AS (
+        SELECT qc.auth_index
+        FROM quota_cycles qc
+        JOIN quota_percent_segments qps ON qps.cycle_id = qc.id
+        WHERE qc.provider = 'codex'
+        ORDER BY qps.last_observed_at DESC, qps.id DESC
+        LIMIT 1
+      )
+      SELECT qc.quota_key, qc.window_seconds, qc.reset_at, qps.remaining_percent
+      FROM quota_cycles qc
+      JOIN quota_percent_segments qps ON qps.cycle_id = qc.id
+      JOIN latest_account la ON qc.auth_index = la.auth_index
+      WHERE qc.provider = 'codex'
+      ORDER BY qps.last_observed_at DESC, qps.id DESC
+      LIMIT 2;
+    "`);
+
+    const rateLimits = [];
+    if (quotaOut.stdout) {
+      const now = new Date();
+      for (const line of quotaOut.stdout.trim().split('\n').filter(Boolean)) {
+        const [key, windowSec, resetAtStr, remainingPercent] = line.split('|');
+        const resetAt = new Date(resetAtStr);
+        const isExpired = !isNaN(resetAt) && resetAt <= now;
+        const remaining = isExpired ? 100 : parseInt(remainingPercent || '0', 10);
+        const windowLabel = parseInt(windowSec, 10) <= 21600 ? '5h' : '7d';
+        rateLimits.push({
+          key,
+          label: windowLabel,
+          remainingPercent: remaining,
+          usedPercent: Math.max(0, 100 - remaining),
+          resetAt: resetAtStr,
+          isExpired
+        });
+      }
+    }
+
+    return { stats, rateLimits };
+  } catch (err) {
+    return null;
+  }
+}
+
+app.get('/api/tokens/keeper-stats', async (req, res) => {
+  const data = await getKeeperTokenStats();
+  if (!data) return res.json({ success: false, error: 'Keeper database unavailable' });
+  res.json({ success: true, ...data });
+});
+
 app.get('/api/repos/:repoId/commits', async (req, res) => {
   try {
     const repoPath = Buffer.from(req.params.repoId, 'base64url').toString('utf-8');
@@ -303,6 +393,28 @@ app.get('/api/repos/:repoId/commits', async (req, res) => {
       }
     } catch {}
 
+    const presets = [];
+    if (commits.length >= 3) {
+      presets.push({
+        hash: 'range:HEAD~3..HEAD',
+        shortHash: 'HEAD~3..0',
+        msg: '📦 聚合最近 3 次提交变更 (多步功能打包分析)',
+        author: 'Git Range',
+        relTime: 'Last 3 commits',
+        isRange: true
+      });
+    }
+    if (commits.length >= 5) {
+      presets.push({
+        hash: 'range:HEAD~5..HEAD',
+        shortHash: 'HEAD~5..0',
+        msg: '📦 聚合最近 5 次提交变更 (里程碑架构演进)',
+        author: 'Git Range',
+        relTime: 'Last 5 commits',
+        isRange: true
+      });
+    }
+
     if (uncommittedFiles.length > 0) {
       commits.unshift({
         hash: 'working-tree',
@@ -316,7 +428,7 @@ app.get('/api/repos/:repoId/commits', async (req, res) => {
       });
     }
 
-    res.json({ success: true, commits, repoPath });
+    res.json({ success: true, commits, presets, repoPath, dirtyCount: uncommittedFiles.length });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -368,18 +480,37 @@ async function getWorkingTreeDiff(repoPath) {
 app.get('/api/repos/:repoId/diff', async (req, res) => {
   try {
     const repoPath = Buffer.from(req.params.repoId, 'base64url').toString('utf-8');
-    const target = req.query.target || 'working-tree';
+    const rawTarget = req.query.target || 'working-tree';
+    const target = rawTarget.startsWith('range:') ? rawTarget.slice(6) : rawTarget;
 
     let diffText = '';
     let statText = '';
     let summaryText = '';
+    let isCleanWorkingTree = false;
+    let fallbackHead = null;
 
     if (target === 'working-tree') {
       diffText = await getWorkingTreeDiff(repoPath);
       statText = await runGit('diff --stat HEAD', repoPath) || await runGit('diff --stat', repoPath);
       summaryText = await runGit('diff --compact-summary HEAD', repoPath) || await runGit('diff --compact-summary', repoPath);
+
+      if (!diffText || diffText.trim() === '') {
+        isCleanWorkingTree = true;
+        try {
+          const headHash = await runGit('rev-parse --short HEAD', repoPath);
+          const headMsg = await runGit('log -1 --pretty=format:"%s (%an, %ar)" HEAD', repoPath);
+          fallbackHead = { hash: 'HEAD', shortHash: headHash, msg: headMsg };
+        } catch {}
+      }
+    } else if (target.includes('..')) {
+      diffText = await runGit(`diff -p ${target}`, repoPath);
+      statText = await runGit(`diff --stat ${target}`, repoPath);
+      summaryText = await runGit(`diff --compact-summary ${target}`, repoPath);
     } else {
-      diffText = await runGit(`show -p ${target}`, repoPath);
+      diffText = await runGit(`show -p -m --first-parent ${target}`, repoPath);
+      if (!diffText || diffText.trim() === '') {
+        diffText = await runGit(`show -p ${target}`, repoPath);
+      }
       statText = await runGit(`show --stat ${target}`, repoPath);
       summaryText = await runGit(`show --compact-summary ${target}`, repoPath);
     }
@@ -389,13 +520,15 @@ app.get('/api/repos/:repoId/diff', async (req, res) => {
 
     res.json({
       success: true,
-      target,
+      target: rawTarget,
       diffText,
       statText,
       summaryText,
       repoPath,
       files,
-      hasFacts: Boolean(facts)
+      hasFacts: Boolean(facts),
+      isCleanWorkingTree,
+      fallbackHead
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -406,8 +539,9 @@ app.get('/api/models', async (req, res) => {
   res.json({
     models: [
       { id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6 (深度思考带读 - 推荐)' },
-      { id: 'gemini-3.1-flash-lite-preview', name: 'Gemini 3.1 Flash (极速响应)' },
-      { id: 'gemini-pro-agent', name: 'Gemini Pro Agent' }
+      { id: 'gemini-3.1-flash-lite-preview', name: 'Gemini 3.1 Flash (AGY 极速免限额)' },
+      { id: 'gpt-6.1-sol', name: 'GPT-6.1 Sol (Codex Plus 旗舰推理)' },
+      { id: 'claude-opus-4-6-thinking', name: 'Claude Opus 4.6 (高维架构推演)' }
     ]
   });
 });
@@ -444,19 +578,40 @@ app.post('/api/mentor/analyze', async (req, res) => {
     // 1. 提取 Diff 与项目全局事实
     let rawDiff = '';
     let commitInfo = '';
+    const rawTarget = target || 'working-tree';
+    const cleanTarget = rawTarget.startsWith('range:') ? rawTarget.slice(6) : rawTarget;
 
-    if (target === 'working-tree') {
+    if (cleanTarget === 'working-tree') {
       rawDiff = await getWorkingTreeDiff(repoPath);
       commitInfo = '【当前工作区未提交修改 (Working Tree)】';
+
+      // 💡 智能自动降级：如果工作区干净 (rawDiff 为空)，自动回退至最新 HEAD 提交进行带读
+      if (!rawDiff || rawDiff.trim() === '') {
+        try {
+          const headHash = await runGit('rev-parse --short HEAD', repoPath);
+          if (headHash) {
+            sendEvent({ 
+              type: 'status', 
+              message: `💡 当前工作区代码干净无未暂存改动，导师已为你自动切换至最新提交 [${headHash}] 展开深度带读...` 
+            });
+            commitInfo = await runGit(`log -1 --pretty=format:"最新提交: %h - %s (%an, %ar)" HEAD`, repoPath);
+            rawDiff = await runGit(`show -p -m --first-parent HEAD`, repoPath) || await runGit(`show -p HEAD`, repoPath);
+          }
+        } catch {}
+      }
+    } else if (cleanTarget.includes('..')) {
+      const [base, head] = cleanTarget.split('..');
+      commitInfo = `【复合区间聚合对比: ${base} 至 ${head}】`;
+      rawDiff = await runGit(`diff -p ${cleanTarget}`, repoPath);
     } else {
-      commitInfo = await runGit(`log -1 --pretty=format:"提交: %h - %s (%an, %ar)" ${target}`, repoPath);
-      rawDiff = await runGit(`show -p ${target}`, repoPath);
+      commitInfo = await runGit(`log -1 --pretty=format:"提交: %h - %s (%an, %ar)" ${cleanTarget}`, repoPath);
+      rawDiff = await runGit(`show -p -m --first-parent ${cleanTarget}`, repoPath) || await runGit(`show -p ${cleanTarget}`, repoPath);
     }
 
     if (!rawDiff || rawDiff.trim() === '') {
       sendEvent({ 
         type: 'error', 
-        message: '当前选中的目标没有检测到代码变动（Diff 为空）。\n👉 如果当前工作区代码是干净的，请在左侧列表中点击具体的【历史提交 (Commit)】，让导师为你带读已提交的代码！' 
+        message: '当前选中的目标没有检测到代码变动（Diff 为空）。\n👉 请在提交列表中选择有代码变动的历史提交 (Commit) 或使用【多提交聚合】对比！' 
       });
       res.end();
       return;
@@ -529,6 +684,7 @@ ${cleanDiff}
     const apiPayload = {
       model,
       stream: true,
+      stream_options: { include_usage: true },
       messages
     };
 
@@ -573,6 +729,9 @@ ${cleanDiff}
           const chunk = parsed.choices?.[0]?.delta?.content || '';
           if (chunk) {
             sendEvent({ type: 'chunk', text: chunk });
+          }
+          if (parsed.usage) {
+            sendEvent({ type: 'usage', usage: parsed.usage });
           }
         } catch {}
       }
