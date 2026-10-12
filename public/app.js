@@ -31,14 +31,33 @@ document.addEventListener('DOMContentLoaded', () => {
 
   lucide.createIcons();
   setupEventListeners();
+  loadModels();
   loadRepos();
   loadKeeperStats();
   setInterval(loadKeeperStats, 15000);
 });
 
+// 动态同步 CPA 活跃模型清单
+async function loadModels() {
+  const select = document.getElementById('model-select');
+  if (!select) return;
+  try {
+    const res = await fetch('/api/models');
+    const data = await res.json();
+    if (data.models && Array.isArray(data.models) && data.models.length > 0) {
+      const currentVal = select.value;
+      select.innerHTML = data.models.map(m => `
+        <option value="${m.id}" ${m.id === currentVal ? 'selected' : ''}>${escapeHtml(m.name)}</option>
+      `).join('');
+    }
+  } catch {}
+}
+
 // 0. 加载 CPA / Keeper 实时统计与配额
 async function loadKeeperStats() {
   const textEl = document.getElementById('keeper-token-text');
+  const popoverContent = document.getElementById('keeper-popover-content');
+  const todayDateEl = document.getElementById('keeper-today-date');
   if (!textEl) return;
 
   try {
@@ -50,6 +69,8 @@ async function loadKeeperStats() {
     }
 
     const { stats, rateLimits } = data;
+    if (todayDateEl) todayDateEl.textContent = stats.today || '';
+
     const formatK = (num) => {
       if (!num) return '0';
       if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
@@ -67,10 +88,46 @@ async function loadKeeperStats() {
 
     const primaryLimit = (rateLimits || []).find(r => r.label === '5h');
     if (primaryLimit) {
-      parts.push(`5h: ${primaryLimit.remainingPercent}%`);
+      const remaining = primaryLimit.remainingPercent;
+      const color = remaining > 30 ? 'text-emerald-400' : (remaining > 10 ? 'text-amber-400' : 'text-rose-400');
+      parts.push(`<span class="${color}">5h: ${remaining}%</span>`);
     }
 
-    textEl.textContent = parts.length > 0 ? parts.join(' · ') : 'CPA 8317 就绪';
+    textEl.innerHTML = parts.length > 0 ? parts.join(' · ') : 'CPA 8317 就绪';
+
+    if (popoverContent) {
+      let limitsHtml = (rateLimits || []).map(r => `
+        <div class="space-y-1 bg-slate-950/60 p-2 rounded border border-slate-800">
+          <div class="flex justify-between items-center text-[11px]">
+            <span class="font-medium text-slate-300">Codex ${r.label} 速率窗口</span>
+            <span class="font-mono ${r.remainingPercent > 30 ? 'text-emerald-400' : 'text-amber-400'}">剩余 ${r.remainingPercent}%</span>
+          </div>
+          <div class="w-full bg-slate-800 h-1.5 rounded-full overflow-hidden">
+            <div class="h-full rounded-full ${r.remainingPercent > 30 ? 'bg-emerald-500' : 'bg-amber-500'}" style="width: ${r.remainingPercent}%"></div>
+          </div>
+          <div class="text-[10px] text-slate-500 flex justify-between">
+            <span>重置时间: ${r.resetAt ? new Date(r.resetAt).toLocaleTimeString() : '已重置'}</span>
+          </div>
+        </div>
+      `).join('');
+
+      let statsHtml = `
+        <div class="grid grid-cols-2 gap-2 text-[11px]">
+          <div class="bg-slate-950/60 p-2 rounded border border-slate-800">
+            <div class="text-slate-400 text-[10px]">今日 Antigravity (AGY)</div>
+            <div class="font-mono font-semibold text-indigo-300 text-xs mt-0.5">${formatK(stats.antigravity?.tokens || 0)} tokens</div>
+            <div class="text-[10px] text-slate-500">${stats.antigravity?.requests || 0} 次请求</div>
+          </div>
+          <div class="bg-slate-950/60 p-2 rounded border border-slate-800">
+            <div class="text-slate-400 text-[10px]">今日 Codex / OpenAI</div>
+            <div class="font-mono font-semibold text-emerald-300 text-xs mt-0.5">${formatK(stats.codex?.tokens || 0)} tokens</div>
+            <div class="text-[10px] text-slate-500">${stats.codex?.requests || 0} 次请求</div>
+          </div>
+        </div>
+      `;
+
+      popoverContent.innerHTML = statsHtml + limitsHtml;
+    }
   } catch (err) {
     textEl.textContent = 'CPA 8317 就绪';
   }
@@ -100,6 +157,21 @@ function setupEventListeners() {
   document.getElementById('repo-search').addEventListener('input', handleRepoFilter);
   document.getElementById('btn-add-repo').addEventListener('click', handleAddRepo);
 
+  // CPA 详情浮窗控制
+  const keeperPill = document.getElementById('keeper-token-pill');
+  const keeperPopover = document.getElementById('keeper-detail-popover');
+  if (keeperPill && keeperPopover) {
+    keeperPill.addEventListener('click', (e) => {
+      e.stopPropagation();
+      keeperPopover.classList.toggle('hidden');
+    });
+    document.addEventListener('click', (e) => {
+      if (!keeperPopover.contains(e.target) && !keeperPill.contains(e.target)) {
+        keeperPopover.classList.add('hidden');
+      }
+    });
+  }
+
   // 快捷动作按钮 (启动全新专项精读)
   document.getElementById('btn-walkthrough').addEventListener('click', () => startMentorAnalysis('walkthrough', '', true));
   document.getElementById('btn-anatomy').addEventListener('click', () => startMentorAnalysis('anatomy', '', true));
@@ -124,6 +196,18 @@ function setupEventListeners() {
 
   // 复制笔记
   document.getElementById('btn-copy-mentor').addEventListener('click', copyMentorNotes);
+
+  // 导出笔记为 .md 本地文档
+  const btnExport = document.getElementById('btn-export-mentor');
+  if (btnExport) {
+    btnExport.addEventListener('click', exportMentorMarkdown);
+  }
+
+  // 复制当前展示的 Diff
+  const btnCopyDiff = document.getElementById('btn-copy-diff');
+  if (btnCopyDiff) {
+    btnCopyDiff.addEventListener('click', copyCurrentDiff);
+  }
 }
 
 // 1. 加载仓库列表
@@ -250,7 +334,6 @@ async function selectRepo(repo) {
     renderCommitList(data.commits);
 
     if (data.commits.length > 0) {
-      // 💡 智能默认选择：如果工作区干净 (dirtyCount == 0)，直接选择第一条真实提交进行展示
       if (data.dirtyCount === 0) {
         const latestRealCommit = data.commits.find(c => !c.isWorkingTree);
         selectTarget(latestRealCommit ? latestRealCommit.hash : data.commits[0].hash);
@@ -312,7 +395,7 @@ window.selectTarget = (targetHash) => {
 // 3. 加载 Diff 内容与变动文件树
 async function fetchDiff(repoId, target) {
   const diffEl = document.getElementById('diff-content');
-  diffEl.innerHTML = '<span class="text-slate-500">正在生成差异对比...</span>';
+  diffEl.innerHTML = '<div class="p-4 text-slate-500 font-mono text-xs">正在生成差异对比...</div>';
 
   document.getElementById('diff-target-label').textContent = 
     target === 'working-tree' ? '当前未提交变动 (Working Tree)' : 
@@ -377,7 +460,8 @@ async function fetchDiff(repoId, target) {
     }
 
     renderActiveDiff();
-    diffEl.innerHTML = `<span class="text-rose-400">获取 Diff 失败: ${err.message}</span>`;
+  } catch (err) {
+    diffEl.innerHTML = `<div class="p-4 text-rose-400 text-xs font-mono">获取 Diff 失败: ${err.message}</div>`;
   }
 }
 
@@ -449,24 +533,71 @@ function renderActiveDiff() {
   diffEl.innerHTML = renderFormattedDiff(textToRender);
 }
 
+// 增强格式化 Diff：支持行号与清晰 Gutter
 function renderFormattedDiff(rawDiff) {
+  if (!rawDiff || rawDiff.trim() === '') return '<span class="text-slate-500">// 无差异内容</span>';
   const lines = rawDiff.split('\n');
+  let oldLine = 0;
+  let newLine = 0;
+
   return lines.map(line => {
     const escaped = escapeHtml(line);
+    if (line.startsWith('diff --git ')) {
+      return `<div class="diff-line text-indigo-400 font-bold mt-3 mb-1 border-b border-indigo-900/50 pb-1"><span class="diff-text font-mono">${escaped}</span></div>`;
+    }
     if (line.startsWith('+++') || line.startsWith('---')) {
-      return `<span class="text-indigo-300 font-bold">${escaped}</span>`;
-    }
-    if (line.startsWith('+')) {
-      return `<span class="diff-line-add">${escaped}</span>`;
-    }
-    if (line.startsWith('-')) {
-      return `<span class="diff-line-del">${escaped}</span>`;
+      return `<div class="diff-line text-indigo-300 font-semibold"><span class="diff-num">···</span><span class="diff-text">${escaped}</span></div>`;
     }
     if (line.startsWith('@@')) {
-      return `<span class="diff-line-hunk">${escaped}</span>`;
+      const m = line.match(/@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+      if (m) {
+        oldLine = parseInt(m[1], 10);
+        newLine = parseInt(m[2], 10);
+      }
+      return `<div class="diff-line diff-line-hunk"><span class="diff-num">@@</span><span class="diff-text">${escaped}</span></div>`;
     }
-    return `<span>${escaped}</span>`;
-  }).join('\n');
+    if (line.startsWith('+')) {
+      const numStr = `${newLine++}`;
+      return `<div class="diff-line diff-line-add"><span class="diff-num">${numStr}</span><span class="diff-text">${escaped}</span></div>`;
+    }
+    if (line.startsWith('-')) {
+      const numStr = `${oldLine++}`;
+      return `<div class="diff-line diff-line-del"><span class="diff-num">${numStr}</span><span class="diff-text">${escaped}</span></div>`;
+    }
+    const numStr = `${newLine++}`;
+    oldLine++;
+    return `<div class="diff-line text-slate-300"><span class="diff-num">${numStr}</span><span class="diff-text">${escaped}</span></div>`;
+  }).join('');
+}
+
+async function copyCurrentDiff() {
+  const btn = document.getElementById('btn-copy-diff');
+  let textToCopy = '';
+  if (currentFocusFile) {
+    const file = currentDiffFiles.find(f => f.path === currentFocusFile);
+    textToCopy = file ? file.patch : '';
+  } else {
+    textToCopy = currentDiffFiles.map(f => f.patch).join('\n\n');
+  }
+
+  if (!textToCopy) {
+    alert('当前没有可复制的代码差异');
+    return;
+  }
+
+  try {
+    await navigator.clipboard.writeText(textToCopy);
+    if (btn) {
+      btn.innerHTML = '<i data-lucide="check" class="w-3 h-3 text-emerald-400"></i> 已复制';
+      lucide.createIcons();
+      setTimeout(() => {
+        btn.innerHTML = '<i data-lucide="copy" class="w-3 h-3"></i> 复制Diff';
+        lucide.createIcons();
+      }, 2000);
+    }
+  } catch {
+    alert('复制失败，请手动选择复制');
+  }
 }
 
 // 4. 触发 Tech Mentor 深度分析 (P1 多轮记忆流式支持)
@@ -522,14 +653,15 @@ async function startMentorAnalysis(mode, customPrompt = '', resetSession = false
       <div class="flex items-center justify-between pb-2 mb-3 border-b border-slate-800/80">
         <span class="text-xs font-semibold text-indigo-300 flex items-center gap-1.5 font-mono">
           <i data-lucide="compass" class="w-3.5 h-3.5 text-indigo-400"></i>
-          Tech Mentor (${modelSelect.options[modelSelect.selectedIndex].text.split(' ')[0]})
+          Tech Mentor (${modelSelect.options[modelSelect.selectedIndex]?.text?.split(' ')[0] || 'AI'})
           ${currentFocusFile ? `<span class="text-[10px] px-1.5 py-0.2 rounded bg-indigo-500/20 text-indigo-300">聚焦: ${currentFocusFile.split('/').pop()}</span>` : ''}
         </span>
         <span class="text-[10px] text-slate-500 font-mono">${new Date().toLocaleTimeString()}</span>
       </div>
-      <article id="${bubbleId}" class="prose prose-invert prose-slate max-w-none text-slate-200 text-sm leading-relaxed">
+      <article id="${bubbleId}" class="mentor-prose prose prose-invert prose-slate max-w-none text-slate-200 text-sm leading-relaxed">
         <div class="text-slate-500 animate-pulse text-xs">导师正在推演系统逻辑与代码流向...</div>
       </article>
+      <div id="footer-${bubbleId}"></div>
     </div>
   `;
   chatStream.appendChild(assistantBubble);
@@ -537,6 +669,7 @@ async function startMentorAnalysis(mode, customPrompt = '', resetSession = false
   chatStream.scrollTop = chatStream.scrollHeight;
 
   const article = document.getElementById(bubbleId);
+  const footerEl = document.getElementById(`footer-${bubbleId}`);
   let currentTurnMarkdown = '';
   let currentTurnUsage = null;
 
@@ -547,7 +680,7 @@ async function startMentorAnalysis(mode, customPrompt = '', resetSession = false
     customPrompt,
     focusFile: currentFocusFile,
     model: modelSelect.value,
-    history: conversationHistory // 附带上一轮历史
+    history: conversationHistory
   };
 
   try {
@@ -590,6 +723,8 @@ async function startMentorAnalysis(mode, customPrompt = '', resetSession = false
             article.innerHTML = marked.parse(currentTurnMarkdown);
           } else if (event.type === 'finished' || event.type === 'done') {
             statusBar.classList.add('hidden');
+            article.innerHTML = marked.parse(currentTurnMarkdown);
+
             if (currentTurnUsage) {
               const usageHtml = `
                 <div class="mt-4 pt-3 border-t border-slate-800/80 flex items-center justify-between text-[11px] text-slate-500 font-mono">
@@ -601,10 +736,9 @@ async function startMentorAnalysis(mode, customPrompt = '', resetSession = false
                   <span class="text-slate-500">CPA 代理网关直连</span>
                 </div>
               `;
-              article.innerHTML = marked.parse(currentTurnMarkdown) + usageHtml;
-            } else {
-              article.innerHTML = marked.parse(currentTurnMarkdown);
+              article.insertAdjacentHTML('beforeend', usageHtml);
             }
+
             postProcessArticle(article);
 
             // 存入多轮历史
@@ -612,6 +746,11 @@ async function startMentorAnalysis(mode, customPrompt = '', resetSession = false
               conversationHistory.push({ role: 'user', content: customPrompt });
             }
             conversationHistory.push({ role: 'assistant', content: currentTurnMarkdown });
+
+            // 附加大师级快捷追问胶囊
+            if (footerEl) {
+              renderQuickChips(footerEl);
+            }
 
             // 刷新顶栏 Token 用量与配额
             loadKeeperStats();
@@ -631,6 +770,40 @@ async function startMentorAnalysis(mode, customPrompt = '', resetSession = false
     currentAbortController = null;
   }
 }
+
+// 快速追问胶囊生成
+function renderQuickChips(container) {
+  const chipsWrapper = document.createElement('div');
+  chipsWrapper.className = 'mt-4 pt-3 border-t border-slate-800/80 flex flex-wrap items-center gap-2 text-xs';
+  chipsWrapper.innerHTML = `
+    <span class="text-slate-500 text-[10px] mr-1 flex items-center gap-1">
+      <i data-lucide="zap" class="w-3 h-3 text-amber-400"></i> 快速深入:
+    </span>
+    <button class="quick-chip" onclick="quickAsk('请深度展开刚才提出的苏格拉底考题，给出详细推演思路与参考答案')">
+      💡 展开自测题推演
+    </button>
+    <button class="quick-chip" onclick="quickAsk('针对本次分析指出的隐蔽暗桩，请给出具体的防御性重构代码')">
+      ⚠️ 给出暗坑防御代码
+    </button>
+    <button class="quick-chip" onclick="quickAsk('请使用 Mermaid sequenceDiagram 时序图画出最核心的调用链路与异常分支')">
+      📐 绘制时序图
+    </button>
+    <button class="quick-chip" onclick="quickAsk('如果在高并发和极端边缘场景下运行，这段代码有什么潜在瓶颈？')">
+      🚀 极限性能与并发剖析
+    </button>
+  `;
+  container.appendChild(chipsWrapper);
+  lucide.createIcons();
+}
+
+window.quickAsk = (prompt) => {
+  const input = document.getElementById('mentor-input');
+  if (input) {
+    input.value = prompt;
+    startMentorAnalysis('custom', prompt, false);
+    input.value = '';
+  }
+};
 
 function stopMentorAnalysis() {
   if (currentAbortController) {
@@ -687,13 +860,93 @@ async function copyMentorNotes() {
   }
 }
 
+// 导出整轮精读笔记为本地 .md 文件
+function exportMentorMarkdown() {
+  if (conversationHistory.length === 0) {
+    alert('暂无精读笔记可导出，请先执行一次技术带读');
+    return;
+  }
+  const repoName = activeRepo ? activeRepo.name : 'repo';
+  const targetTag = activeTarget.replace(/[^a-zA-Z0-9_\-\.]/g, '_');
+  const fileName = `tech-mentor-${repoName}-${targetTag}.md`;
+
+  let fullMarkdown = `# 🧭 Tech Mentor 深度精读笔记: ${repoName}\n\n`;
+  fullMarkdown += `> **代码目标**: \`${activeTarget}\` | **导出时间**: ${new Date().toLocaleString()} | **仓库路径**: \`${activeRepo?.path || ''}\`\n\n`;
+  fullMarkdown += `---\n\n`;
+
+  conversationHistory.forEach((item, idx) => {
+    if (item.role === 'user') {
+      fullMarkdown += `## 💬 提问 / 追问 ${Math.ceil((idx + 1) / 2)}\n\n${item.content}\n\n`;
+    } else {
+      fullMarkdown += `## 🧠 导师带读与架构剖析\n\n${item.content}\n\n---\n\n`;
+    }
+  });
+
+  const blob = new Blob([fullMarkdown], { type: 'text/markdown;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = fileName;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+// 后置渲染美化：代码块复制按钮与 Mermaid 渲染
 async function postProcessArticle(article) {
+  // 1. Highlight.js 代码高亮
   article.querySelectorAll('pre code').forEach((block) => {
     if (!block.classList.contains('language-mermaid')) {
       hljs.highlightElement(block);
     }
   });
 
+  // 2. 为每个代码块增加头部栏与一键复制功能
+  article.querySelectorAll('pre').forEach((pre) => {
+    if (pre.closest('.code-block-wrapper')) return;
+    const code = pre.querySelector('code');
+    if (!code || code.classList.contains('language-mermaid')) return;
+
+    let lang = 'code';
+    for (const cls of code.classList) {
+      if (cls.startsWith('language-')) {
+        lang = cls.replace('language-', '');
+        break;
+      }
+    }
+
+    const wrapper = document.createElement('div');
+    wrapper.className = 'code-block-wrapper';
+
+    const header = document.createElement('div');
+    header.className = 'code-block-header';
+    header.innerHTML = `
+      <span class="text-slate-400 uppercase font-mono">${lang}</span>
+      <button class="copy-code-btn text-slate-400 hover:text-slate-100 flex items-center gap-1 transition text-[10px]">
+        <i data-lucide="copy" class="w-3 h-3"></i> 复制代码
+      </button>
+    `;
+
+    pre.parentNode.insertBefore(wrapper, pre);
+    wrapper.appendChild(header);
+    wrapper.appendChild(pre);
+
+    const copyBtn = header.querySelector('.copy-code-btn');
+    copyBtn.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(code.innerText);
+        copyBtn.innerHTML = '<i data-lucide="check" class="w-3 h-3 text-emerald-400"></i> 已复制';
+        lucide.createIcons();
+        setTimeout(() => {
+          copyBtn.innerHTML = '<i data-lucide="copy" class="w-3 h-3"></i> 复制代码';
+          lucide.createIcons();
+        }, 2000);
+      } catch {}
+    });
+  });
+
+  // 3. 渲染 Mermaid 图表
   const mermaidBlocks = article.querySelectorAll('pre code.language-mermaid');
   if (mermaidBlocks.length > 0 && window.mermaid) {
     for (let i = 0; i < mermaidBlocks.length; i++) {
@@ -711,6 +964,8 @@ async function postProcessArticle(article) {
       console.warn('Mermaid render error:', e);
     }
   }
+
+  lucide.createIcons();
 }
 
 function escapeHtml(str) {

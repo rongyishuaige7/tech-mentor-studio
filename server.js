@@ -91,13 +91,45 @@ function isNoiseFile(filePath) {
 function parseDiffFiles(diffText) {
   if (!diffText) return [];
   const files = [];
-  const chunks = diffText.split(/^diff --git /m).filter(Boolean);
+
+  // 关键修复：截取首个 diff --git 之后的内容，消除 commit header 误作为文件的 bug
+  const gitDiffIdx = diffText.indexOf('diff --git ');
+  if (gitDiffIdx === -1) return [];
+
+  const diffOnly = diffText.slice(gitDiffIdx);
+  const chunks = diffOnly.split(/^diff --git /m).filter(Boolean);
 
   for (const chunk of chunks) {
     const lines = chunk.split('\n');
     const header = lines[0] || '';
-    const match = header.match(/a\/(.+?)\s+b\/(.+)/);
-    const filePath = match ? match[2].trim() : (lines[1] || 'unknown').trim();
+    
+    // 鲁棒提取文件路径 (支持引号、空格、删除、新增与重命名)
+    let filePath = 'unknown';
+    let oldPath = null;
+    const match = header.match(/"?a\/(.+?)"?\s+"?b\/(.+?)"?$/);
+    if (match) {
+      const pA = match[1].replace(/^"|"$/g, '').trim();
+      const pB = match[2].replace(/^"|"$/g, '').trim();
+      if (pB === '/dev/null' || pB === 'dev/null') {
+        filePath = pA;
+        oldPath = pA;
+      } else if (pA === '/dev/null' || pA === 'dev/null') {
+        filePath = pB;
+      } else {
+        filePath = pB;
+        if (pA !== pB) oldPath = pA;
+      }
+    } else {
+      for (const line of lines.slice(1, 6)) {
+        if (line.startsWith('+++ b/')) {
+          filePath = line.slice(6).replace(/^"|"$/g, '').trim();
+          break;
+        }
+      }
+      if (filePath === 'unknown' && lines[1]) {
+        filePath = lines[1].trim();
+      }
+    }
 
     let additions = 0;
     let deletions = 0;
@@ -110,6 +142,7 @@ function parseDiffFiles(diffText) {
 
     files.push({
       path: filePath,
+      oldPath,
       additions,
       deletions,
       isNoise,
@@ -140,7 +173,7 @@ function getCleanDiffForMentor(diffFiles, focusFile = null) {
   return combined;
 }
 
-// ----------------- P0: 项目级事实源 (SSOT) 自动探针 -----------------
+// ----------------- P0: 项目级事实源 (SSOT) 自动探针 (支持 Node/Python/Rust/Go) -----------------
 
 function getProjectFacts(repoPath) {
   const candidateFiles = [
@@ -171,13 +204,50 @@ function getProjectFacts(repoPath) {
     }
   }
 
-  // 补充 package.json 基础信息
+  // 1. Node.js (package.json)
   const pkgPath = path.join(repoPath, 'package.json');
   if (fs.existsSync(pkgPath)) {
     try {
       const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
       const deps = Object.keys(pkg.dependencies || {}).slice(0, 10).join(', ');
-      facts.unshift(`【项目属性】名称: ${pkg.name || path.basename(repoPath)} | 描述: ${pkg.description || '无'} | 核心依赖: ${deps || '原生标准库'}`);
+      facts.unshift(`【项目属性 (Node.js)】名称: ${pkg.name || path.basename(repoPath)} | 描述: ${pkg.description || '无'} | 核心依赖: ${deps || '原生标准库'}`);
+    } catch {}
+  }
+
+  // 2. Python (pyproject.toml / requirements.txt)
+  const pyprojectPath = path.join(repoPath, 'pyproject.toml');
+  const reqsPath = path.join(repoPath, 'requirements.txt');
+  if (fs.existsSync(pyprojectPath)) {
+    try {
+      const raw = fs.readFileSync(pyprojectPath, 'utf-8');
+      const lines = raw.split('\n').slice(0, 30).join('\n');
+      facts.unshift(`【项目属性 (Python pyproject.toml)】\n${lines.trim()}`);
+    } catch {}
+  } else if (fs.existsSync(reqsPath)) {
+    try {
+      const raw = fs.readFileSync(reqsPath, 'utf-8');
+      const reqs = raw.split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('#')).slice(0, 10).join(', ');
+      facts.unshift(`【项目属性 (Python)】核心依赖: ${reqs}`);
+    } catch {}
+  }
+
+  // 3. Rust (Cargo.toml)
+  const cargoPath = path.join(repoPath, 'Cargo.toml');
+  if (fs.existsSync(cargoPath)) {
+    try {
+      const raw = fs.readFileSync(cargoPath, 'utf-8');
+      const lines = raw.split('\n').slice(0, 25).join('\n');
+      facts.unshift(`【项目属性 (Rust Cargo)】\n${lines.trim()}`);
+    } catch {}
+  }
+
+  // 4. Go (go.mod)
+  const gomodPath = path.join(repoPath, 'go.mod');
+  if (fs.existsSync(gomodPath)) {
+    try {
+      const raw = fs.readFileSync(gomodPath, 'utf-8');
+      const lines = raw.split('\n').slice(0, 20).join('\n');
+      facts.unshift(`【项目属性 (Go module)】\n${lines.trim()}`);
     } catch {}
   }
 
@@ -459,11 +529,16 @@ async function getWorkingTreeDiff(repoPath) {
             const size = fs.statSync(fullPath).size;
             if (size > 0 && size < 300000) {
               try {
-                const content = fs.readFileSync(fullPath, 'utf-8');
-                const fileLines = content.split('\n');
-                diffText += `\ndiff --git a/${relPath} b/${relPath}\nnew file mode 100644\n--- /dev/null\n+++ b/${relPath}\n@@ -0,0 +1,${fileLines.length} @@\n`;
-                for (const fl of fileLines) {
-                  diffText += '+' + fl + '\n';
+                const buf = fs.readFileSync(fullPath);
+                // 排除二进制文件 (含 null 字节)
+                const isBinary = buf.slice(0, 512).includes(0);
+                if (!isBinary) {
+                  const content = buf.toString('utf-8');
+                  const fileLines = content.split('\n');
+                  diffText += `\ndiff --git a/${relPath} b/${relPath}\nnew file mode 100644\n--- /dev/null\n+++ b/${relPath}\n@@ -0,0 +1,${fileLines.length} @@\n`;
+                  for (const fl of fileLines) {
+                    diffText += '+' + fl + '\n';
+                  }
                 }
               } catch {}
             }
@@ -482,6 +557,11 @@ app.get('/api/repos/:repoId/diff', async (req, res) => {
     const repoPath = Buffer.from(req.params.repoId, 'base64url').toString('utf-8');
     const rawTarget = req.query.target || 'working-tree';
     const target = rawTarget.startsWith('range:') ? rawTarget.slice(6) : rawTarget;
+
+    // 安全防注入校验：只允许合法 git 引用/提交范围或 working-tree
+    if (!/^(working-tree|[a-zA-Z0-9_\.\-\~\^]+(\.\.[a-zA-Z0-9_\.\-\~\^]+)?)$/.test(target)) {
+      return res.status(400).json({ error: '无效或不安全的 Git 目标引用' });
+    }
 
     let diffText = '';
     let statText = '';
@@ -536,14 +616,34 @@ app.get('/api/repos/:repoId/diff', async (req, res) => {
 });
 
 app.get('/api/models', async (req, res) => {
-  res.json({
-    models: [
-      { id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6 (深度思考带读 - 推荐)' },
-      { id: 'gemini-3.1-flash-lite-preview', name: 'Gemini 3.1 Flash (AGY 极速免限额)' },
-      { id: 'gpt-6.1-sol', name: 'GPT-6.1 Sol (Codex Plus 旗舰推理)' },
-      { id: 'claude-opus-4-6-thinking', name: 'Claude Opus 4.6 (高维架构推演)' }
-    ]
-  });
+  const defaultModels = [
+    { id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6 (深度思考带读 - 推荐)' },
+    { id: 'claude-sonnet-5-5-high', name: 'Claude Sonnet 5.5 High (高维架构解构)' },
+    { id: 'gemini-3.8-flash-high', name: 'Gemini 3.8 Flash High (AGY 极速免限额)' },
+    { id: 'gpt-6.1-sol', name: 'GPT-6.1 Sol (Codex Plus 旗舰推理)' },
+    { id: 'claude-opus-4-6-thinking', name: 'Claude Opus 4.6 (高维架构推演)' }
+  ];
+
+  try {
+    const cpaRes = await fetch('http://127.0.0.1:8317/v1/models', {
+      headers: { 'Authorization': `Bearer ${PROXY_KEY}` },
+      signal: AbortSignal.timeout(2000)
+    });
+    if (cpaRes.ok) {
+      const data = await cpaRes.json();
+      if (Array.isArray(data.data)) {
+        const availableIds = new Set(data.data.map(m => m.id));
+        const activeDefaults = defaultModels.filter(m => availableIds.has(m.id));
+        const otherModels = data.data
+          .filter(m => !defaultModels.some(dm => dm.id === m.id))
+          .map(m => ({ id: m.id, name: `${m.id} (${m.owned_by || 'CPA'})` }));
+
+        return res.json({ models: [...activeDefaults, ...otherModels] });
+      }
+    }
+  } catch {}
+
+  res.json({ models: defaultModels });
 });
 
 // ----------------- P0 + P1: 导师带读核心 (多轮连贯记忆 + 项目事实源注入) -----------------
@@ -580,6 +680,12 @@ app.post('/api/mentor/analyze', async (req, res) => {
     let commitInfo = '';
     const rawTarget = target || 'working-tree';
     const cleanTarget = rawTarget.startsWith('range:') ? rawTarget.slice(6) : rawTarget;
+
+    if (!/^(working-tree|[a-zA-Z0-9_\.\-\~\^]+(\.\.[a-zA-Z0-9_\.\-\~\^]+)?)$/.test(cleanTarget)) {
+      sendEvent({ type: 'error', message: '无效或不安全的 Git 目标引用' });
+      res.end();
+      return;
+    }
 
     if (cleanTarget === 'working-tree') {
       rawDiff = await getWorkingTreeDiff(repoPath);
