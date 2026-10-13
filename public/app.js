@@ -5,6 +5,12 @@ let activeTarget = 'working-tree'; // 'working-tree' 或 commit hash
 let currentDiffFiles = [];
 let currentFocusFile = null; // null 表示全部文件
 let currentAbortController = null;
+let mentorSessionVersion = 0;
+let mentorRequestSequence = 0;
+let repoRequestSequence = 0;
+let diffRequestSequence = 0;
+let currentRepoAbortController = null;
+let currentDiffAbortController = null;
 
 // P1: 多轮对话记忆栈 [{ role: 'user' | 'assistant', content: string }]
 let conversationHistory = [];
@@ -311,6 +317,14 @@ async function handleAddRepo() {
 
 // 2. 选择仓库并加载提交记录
 async function selectRepo(repo) {
+  const sequence = ++repoRequestSequence;
+  currentRepoAbortController?.abort();
+  const controller = new AbortController();
+  currentRepoAbortController = controller;
+  currentDiffAbortController?.abort();
+  diffRequestSequence++;
+  currentDiffFiles = [];
+  activeTarget = 'working-tree';
   activeRepo = repo;
   currentFocusFile = null;
   clearMentorSession();
@@ -326,10 +340,11 @@ async function selectRepo(repo) {
   commitListEl.innerHTML = '<div class="text-xs text-slate-500 text-center py-6">正在读取变动记录...</div>';
 
   try {
-    const res = await fetch(`/api/repos/${repo.id}/commits`);
+    const res = await fetch(`/api/repos/${repo.id}/commits`, { signal: controller.signal });
     const data = await res.json();
     if (!data.success) throw new Error(data.error);
 
+    if (sequence !== repoRequestSequence || activeRepo?.id !== repo.id) return;
     renderCommitPresets(data.presets || []);
     renderCommitList(data.commits);
 
@@ -342,7 +357,8 @@ async function selectRepo(repo) {
       }
     }
   } catch (err) {
-    commitListEl.innerHTML = `<div class="text-xs text-rose-400 text-center py-4">读取提交失败: ${err.message}</div>`;
+    if (sequence !== repoRequestSequence || err.name === 'AbortError') return;
+    commitListEl.innerHTML = `<div class="text-xs text-rose-400 text-center py-4">读取提交失败: ${escapeHtml(err.message)}</div>`;
   }
 }
 
@@ -394,6 +410,13 @@ window.selectTarget = (targetHash) => {
 
 // 3. 加载 Diff 内容与变动文件树
 async function fetchDiff(repoId, target) {
+  const sequence = ++diffRequestSequence;
+  currentDiffAbortController?.abort();
+  const controller = new AbortController();
+  currentDiffAbortController = controller;
+  currentDiffFiles = [];
+  renderFileFilterChips([]);
+  document.getElementById('diff-stat-badge').textContent = '加载中';
   const diffEl = document.getElementById('diff-content');
   diffEl.innerHTML = '<div class="p-4 text-slate-500 font-mono text-xs">正在生成差异对比...</div>';
 
@@ -404,9 +427,11 @@ async function fetchDiff(repoId, target) {
     `提交 ${target.slice(0, 8)}`;
 
   try {
-    const res = await fetch(`/api/repos/${repoId}/diff?target=${encodeURIComponent(target)}`);
+    const res = await fetch(`/api/repos/${repoId}/diff?target=${encodeURIComponent(target)}`, { signal: controller.signal });
     const data = await res.json();
     if (!data.success) throw new Error(data.error);
+
+    if (sequence !== diffRequestSequence || activeRepo?.id !== repoId) return;
 
     // 更新事实源挂载指示器
     const factsBadge = document.getElementById('facts-badge');
@@ -461,7 +486,8 @@ async function fetchDiff(repoId, target) {
 
     renderActiveDiff();
   } catch (err) {
-    diffEl.innerHTML = `<div class="p-4 text-rose-400 text-xs font-mono">获取 Diff 失败: ${err.message}</div>`;
+    if (sequence !== diffRequestSequence || err.name === 'AbortError') return;
+    diffEl.innerHTML = `<div class="p-4 text-rose-400 text-xs font-mono">获取 Diff 失败: ${escapeHtml(err.message)}</div>`;
   }
 }
 
@@ -510,6 +536,7 @@ function renderFileFilterChips(files) {
 }
 
 window.setFocusFile = (filePath) => {
+  if (currentFocusFile !== filePath) clearMentorSession();
   currentFocusFile = filePath;
   renderFileFilterChips(currentDiffFiles);
   renderActiveDiff();
@@ -614,7 +641,12 @@ async function startMentorAnalysis(mode, customPrompt = '', resetSession = false
   if (currentAbortController) {
     currentAbortController.abort();
   }
-  currentAbortController = new AbortController();
+  const controller = new AbortController();
+  currentAbortController = controller;
+  const requestId = ++mentorRequestSequence;
+  const sessionVersion = mentorSessionVersion;
+  const ownsRequest = () => requestId === mentorRequestSequence && sessionVersion === mentorSessionVersion;
+  const isCurrent = () => ownsRequest() && !controller.signal.aborted;
 
   const emptyState = document.getElementById('mentor-empty-state');
   if (emptyState) emptyState.classList.add('hidden');
@@ -647,7 +679,7 @@ async function startMentorAnalysis(mode, customPrompt = '', resetSession = false
   // 创建导师回答气泡容器
   const assistantBubble = document.createElement('div');
   assistantBubble.className = 'flex justify-start';
-  const bubbleId = 'bubble-' + Date.now();
+  const bubbleId = `bubble-${sessionVersion}-${requestId}`;
   assistantBubble.innerHTML = `
     <div class="bg-slate-900/80 border border-slate-800 rounded-xl rounded-tl-none p-5 max-w-none w-full shadow-lg">
       <div class="flex items-center justify-between pb-2 mb-3 border-b border-slate-800/80">
@@ -672,6 +704,7 @@ async function startMentorAnalysis(mode, customPrompt = '', resetSession = false
   const footerEl = document.getElementById(`footer-${bubbleId}`);
   let currentTurnMarkdown = '';
   let currentTurnUsage = null;
+  let finalized = false;
 
   const payload = {
     repoPath: activeRepo.path,
@@ -688,7 +721,7 @@ async function startMentorAnalysis(mode, customPrompt = '', resetSession = false
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
-      signal: currentAbortController.signal
+      signal: controller.signal
     });
 
     if (!response.ok) throw new Error(`服务响应异常: ${response.status}`);
@@ -696,78 +729,73 @@ async function startMentorAnalysis(mode, customPrompt = '', resetSession = false
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop();
-
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue;
-        const jsonStr = line.slice(6);
-        try {
-          const event = JSON.parse(jsonStr);
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (!isCurrent()) return;
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop();
+        for (const line of lines) {
+          if (!line.startsWith('data:')) continue;
+          let event;
+          try { event = JSON.parse(line.slice(5).trim()); }
+          catch { throw new Error('服务器返回无效的流式数据'); }
+          if (!isCurrent()) return;
           if (event.type === 'status') {
             statusText.textContent = event.message;
-          } else if (event.type === 'chunk') {
+          } else if (event.type === 'chunk' && !finalized) {
             currentTurnMarkdown += event.text;
             article.innerHTML = marked.parse(currentTurnMarkdown);
             chatStream.scrollTop = chatStream.scrollHeight;
           } else if (event.type === 'usage') {
             currentTurnUsage = event.usage;
           } else if (event.type === 'error') {
-            currentTurnMarkdown += `\n\n> ⚠️ **错误**: ${event.message}`;
+            throw new Error(event.message || '分析失败');
+          } else if ((event.type === 'finished' || event.type === 'done') && !finalized) {
+            finalized = true;
             article.innerHTML = marked.parse(currentTurnMarkdown);
-          } else if (event.type === 'finished' || event.type === 'done') {
-            statusBar.classList.add('hidden');
-            article.innerHTML = marked.parse(currentTurnMarkdown);
-
+            await postProcessArticle(article);
+            if (!isCurrent()) return;
             if (currentTurnUsage) {
-              const usageHtml = `
-                <div class="mt-4 pt-3 border-t border-slate-800/80 flex items-center justify-between text-[11px] text-slate-500 font-mono">
-                  <span class="flex items-center gap-1.5">
-                    <span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
-                    本次分析消耗: <strong class="text-indigo-300 font-semibold">${currentTurnUsage.total_tokens || 0}</strong> tokens
-                    <span class="text-slate-600">(输入: ${currentTurnUsage.prompt_tokens || 0}, 输出: ${currentTurnUsage.completion_tokens || 0})</span>
-                  </span>
-                  <span class="text-slate-500">CPA 代理网关直连</span>
-                </div>
-              `;
-              article.insertAdjacentHTML('beforeend', usageHtml);
+              const numeric = key => Math.max(0, Number(currentTurnUsage[key]) || 0);
+              const usage = document.createElement('div');
+              usage.className = 'mt-4 pt-3 border-t border-slate-800 text-xs text-slate-500';
+              usage.textContent = `本次分析: ${numeric('total_tokens')} tokens (输入: ${numeric('prompt_tokens')}, 输出: ${numeric('completion_tokens')})`;
+              footerEl.appendChild(usage);
             }
-
-            postProcessArticle(article);
-
-            // 存入多轮历史
-            if (!resetSession && customPrompt) {
-              conversationHistory.push({ role: 'user', content: customPrompt });
-            }
+            if (customPrompt) conversationHistory.push({ role: 'user', content: customPrompt });
             conversationHistory.push({ role: 'assistant', content: currentTurnMarkdown });
-
-            // 附加大师级快捷追问胶囊
-            if (footerEl) {
-              renderQuickChips(footerEl);
-            }
-
-            // 刷新顶栏 Token 用量与配额
+            if (footerEl) renderQuickChips(footerEl);
             loadKeeperStats();
+            statusBar.classList.add('hidden');
           }
-        } catch {}
+        }
       }
+      if (!finalized) throw new Error('回答流意外中断，未保存到对话历史');
+    } finally {
+      await reader.cancel().catch(() => {});
+      reader.releaseLock();
     }
   } catch (err) {
-    if (err.name === 'AbortError') {
-      statusText.textContent = '已终止生成';
-      setTimeout(() => statusBar.classList.add('hidden'), 1000);
+    if (!ownsRequest()) return;
+    if (controller.signal.aborted) {
+      const notice = document.createElement('p');
+      notice.className = 'text-slate-500 text-xs mt-2';
+      notice.textContent = '已终止生成，未保存未完成的回答';
+      article.appendChild(notice);
     } else {
-      article.innerHTML = `<div class="text-rose-400 p-3 bg-rose-500/10 rounded border border-rose-500/20 text-xs">分析失败: ${err.message}</div>`;
-      statusBar.classList.add('hidden');
+      const notice = document.createElement('p');
+      notice.className = 'text-rose-400 text-xs mt-2';
+      notice.textContent = `分析失败: ${err.message}`;
+      article.appendChild(notice);
     }
   } finally {
-    currentAbortController = null;
+    if (currentAbortController === controller) {
+      currentAbortController = null;
+      statusBar.classList.add('hidden');
+    }
   }
 }
 
@@ -812,6 +840,10 @@ function stopMentorAnalysis() {
 }
 
 function clearMentorSession() {
+  mentorSessionVersion++;
+  currentAbortController?.abort();
+  currentAbortController = null;
+  document.getElementById('mentor-status-bar').classList.add('hidden');
   conversationHistory = [];
   const chatStream = document.getElementById('mentor-chat-stream');
   chatStream.innerHTML = `

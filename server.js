@@ -1,3 +1,4 @@
+import { relayCompletion, requestLifecycle } from './lib/stream.js';
 import express from 'express';
 import cors from 'cors';
 import { exec } from 'child_process';
@@ -668,8 +669,9 @@ app.post('/api/mentor/analyze', async (req, res) => {
     'Connection': 'keep-alive'
   });
 
+  const lifecycle = requestLifecycle(res, 180000);
   const sendEvent = (data) => {
-    res.write(`data: ${JSON.stringify(data)}\n\n`);
+    if (!res.destroyed && !res.writableEnded) res.write(`data: ${JSON.stringify(data)}\n\n`);
   };
 
   try {
@@ -800,7 +802,8 @@ ${cleanDiff}
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${PROXY_KEY}`
       },
-      body: JSON.stringify(apiPayload)
+      body: JSON.stringify(apiPayload),
+      signal: lifecycle.signal
     });
 
     if (!response.ok) {
@@ -810,45 +813,14 @@ ${cleanDiff}
       return;
     }
 
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop();
-
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed || !trimmed.startsWith('data: ')) continue;
-        const jsonStr = trimmed.slice(6);
-        if (jsonStr === '[DONE]') {
-          sendEvent({ type: 'done' });
-          continue;
-        }
-        try {
-          const parsed = JSON.parse(jsonStr);
-          const chunk = parsed.choices?.[0]?.delta?.content || '';
-          if (chunk) {
-            sendEvent({ type: 'chunk', text: chunk });
-          }
-          if (parsed.usage) {
-            sendEvent({ type: 'usage', usage: parsed.usage });
-          }
-        } catch {}
-      }
-    }
-
-    sendEvent({ type: 'finished' });
+    await relayCompletion(response, sendEvent, lifecycle.signal);
     res.end();
 
   } catch (err) {
-    sendEvent({ type: 'error', message: `分析失败: ${err.message}` });
+    sendEvent({ type: 'error', message: lifecycle.signal.aborted ? lifecycle.signal.reason.message : `分析失败: ${err.message}` });
     res.end();
+  } finally {
+    lifecycle.dispose();
   }
 });
 
