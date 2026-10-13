@@ -79,6 +79,7 @@ test('old finally cannot erase the replacement request stop controller', async (
     });
   });
   const first = context.startMentorAnalysis('walkthrough');
+  await new Promise(resolve => setImmediate(resolve));
   const second = context.startMentorAnalysis('anatomy');
   await first;
   assert.equal(get('currentAbortController !== null'), true);
@@ -91,7 +92,9 @@ test('out of order diff response cannot replace the current repository', async (
   const pending = [];
   const { context, get } = loadClient(() => new Promise(resolve => pending.push(resolve)));
   const first = context.fetchDiff('A', 'commitA');
+  await new Promise(resolve => setImmediate(resolve));
   const second = context.fetchDiff('B', 'commitB');
+  await new Promise(resolve => setImmediate(resolve));
   const response = file => ({ json: async () => ({ success: true, files: [{ path: file, patch: 'patch', additions: 1, deletions: 0 }], diffText: 'patch' }) });
   pending[1](response('B.js')); await second;
   pending[0](response('A.js')); await first;

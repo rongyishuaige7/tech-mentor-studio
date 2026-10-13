@@ -2,3 +2,6 @@ node_modules/
 .DS_Store
 *.log
 data/
+public/vendor/
+test-results/
+playwright-report/

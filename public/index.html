@@ -4,32 +4,14 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Tech Mentor Studio | 本地代码内化与导师工作台</title>
-  <!-- Tailwind CSS -->
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script>
-    tailwind.config = {
-      darkMode: 'class',
-      theme: {
-        extend: {
-          colors: {
-            brand: {
-              500: '#6366f1',
-              600: '#4f46e5',
-            }
-          }
-        }
-      }
-    }
-  </script>
-  <!-- Lucide Icons -->
-  <script src="https://unpkg.com/lucide@latest"></script>
-  <!-- Marked.js -->
-  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-  <!-- Highlight.js -->
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
-  <!-- Mermaid.js -->
-  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+  <!-- 固定版本资源由 npm run build 在本机生成 -->
+  <link rel="stylesheet" href="/vendor/tailwind.css">
+  <link rel="stylesheet" href="/vendor/highlight.css">
+  <script defer src="/vendor/lucide.js"></script>
+  <script defer src="/vendor/marked.js"></script>
+  <script defer src="/vendor/purify.js"></script>
+  <script defer src="/vendor/highlight.js"></script>
+  <script defer src="/vendor/mermaid.js"></script>
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body class="bg-[#0b0f19] text-slate-200 font-sans h-screen flex flex-col overflow-hidden antialiased select-none">
@@ -249,6 +231,6 @@
 
   </main>
 
-  <script src="/app.js"></script>
+  <script defer src="/app.js"></script>
 </body>
 </html>

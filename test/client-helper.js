@@ -25,7 +25,10 @@ export function loadClient(fetcher) {
     }
   };
   const context = vm.createContext({
-    document, fetch: fetcher, AbortController, TextDecoder, console,
+    document, fetch: (url, options) => url === '/api/session'
+      ? Promise.resolve({ ok: true, json: async () => ({ token: 'test-session' }) })
+      : fetcher(url, options), AbortController, TextDecoder, console,
+    DOMPurify: { sanitize: x => x },
     marked: { parse: x => x }, lucide: { createIcons() {} }, hljs: {},
     setTimeout, clearTimeout, alert() {}, navigator: {}
   });

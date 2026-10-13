@@ -1,6 +1,6 @@
+import { localAccess, RepositoryRegistry, readRepoText, isSensitiveFile } from './lib/security.js';
 import { relayCompletion, requestLifecycle } from './lib/stream.js';
 import express from 'express';
-import cors from 'cors';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import fs from 'fs';
@@ -17,8 +17,12 @@ const PORT = process.env.PORT || 3300;
 const PROXY_URL = 'http://127.0.0.1:8317/v1/chat/completions';
 const PROXY_KEY = 'REDACTED-LOCAL-KEY';
 
-app.use(cors());
-app.use(express.json({ limit: '10mb' }));
+const access = localAccess();
+const registry = new RepositoryRegistry();
+app.use(access.guard);
+app.get('/api/session', access.session);
+app.use('/api', access.authenticate);
+app.use(express.json({ limit: '1mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
 // 数据持久化路径
@@ -31,7 +35,9 @@ const WATCHLIST_FILE = path.join(DATA_DIR, 'watchlist.json');
 function getWatchlist() {
   if (fs.existsSync(WATCHLIST_FILE)) {
     try {
-      return JSON.parse(fs.readFileSync(WATCHLIST_FILE, 'utf-8'));
+      const list = JSON.parse(fs.readFileSync(WATCHLIST_FILE, 'utf-8'));
+      if (!Array.isArray(list) || !list.every(p => typeof p === 'string')) throw new Error('关注列表格式无效');
+      return list;
     } catch {
       return [];
     }
@@ -40,11 +46,13 @@ function getWatchlist() {
 }
 
 function saveWatchlist(list) {
-  fs.writeFileSync(WATCHLIST_FILE, JSON.stringify(list, null, 2), 'utf-8');
+  const temporary = `${WATCHLIST_FILE}.${process.pid}.tmp`;
+  fs.writeFileSync(temporary, JSON.stringify(list, null, 2), { encoding: 'utf-8', mode: 0o600 });
+  fs.renameSync(temporary, WATCHLIST_FILE);
 }
 
 // 默认扫描的顶级目录
-const DEFAULT_SCAN_ROOTS = [
+const DEFAULT_SCAN_ROOTS = process.env.SCAN_ROOTS_JSON ? JSON.parse(process.env.SCAN_ROOTS_JSON) : [
   path.join(os.homedir(), 'Desktop'),
   path.join(os.homedir(), 'Developer'),
   path.join(os.homedir(), 'Github'),
@@ -147,6 +155,7 @@ function parseDiffFiles(diffText) {
       additions,
       deletions,
       isNoise,
+      isSensitive: isSensitiveFile(filePath),
       patch: 'diff --git ' + chunk
     });
   }
@@ -155,9 +164,9 @@ function parseDiffFiles(diffText) {
 }
 
 function getCleanDiffForMentor(diffFiles, focusFile = null) {
-  let selected = diffFiles;
+  let selected = diffFiles.filter(file => !file.isSensitive);
   if (focusFile) {
-    selected = diffFiles.filter(f => f.path === focusFile);
+    selected = selected.filter(f => f.path === focusFile);
   }
   // 排除噪音文件
   const codeFiles = selected.filter(f => !f.isNoise);
@@ -195,7 +204,7 @@ function getProjectFacts(repoPath) {
       try {
         const stats = fs.statSync(fullPath);
         if (stats.size > 0 && stats.size < 500000) {
-          const raw = fs.readFileSync(fullPath, 'utf-8');
+          const raw = readRepoText(repoPath, relPath);
           // 取前 80 行，提炼核心架构规则
           const lines = raw.split('\n').slice(0, 80).join('\n');
           facts.push(`### [项目事实源与关键约束: ${relPath}]\n${lines.trim()}`);
@@ -209,7 +218,7 @@ function getProjectFacts(repoPath) {
   const pkgPath = path.join(repoPath, 'package.json');
   if (fs.existsSync(pkgPath)) {
     try {
-      const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
+      const pkg = JSON.parse(readRepoText(repoPath, 'package.json'));
       const deps = Object.keys(pkg.dependencies || {}).slice(0, 10).join(', ');
       facts.unshift(`【项目属性 (Node.js)】名称: ${pkg.name || path.basename(repoPath)} | 描述: ${pkg.description || '无'} | 核心依赖: ${deps || '原生标准库'}`);
     } catch {}
@@ -220,13 +229,13 @@ function getProjectFacts(repoPath) {
   const reqsPath = path.join(repoPath, 'requirements.txt');
   if (fs.existsSync(pyprojectPath)) {
     try {
-      const raw = fs.readFileSync(pyprojectPath, 'utf-8');
+      const raw = readRepoText(repoPath, 'pyproject.toml');
       const lines = raw.split('\n').slice(0, 30).join('\n');
       facts.unshift(`【项目属性 (Python pyproject.toml)】\n${lines.trim()}`);
     } catch {}
   } else if (fs.existsSync(reqsPath)) {
     try {
-      const raw = fs.readFileSync(reqsPath, 'utf-8');
+      const raw = readRepoText(repoPath, 'requirements.txt');
       const reqs = raw.split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('#')).slice(0, 10).join(', ');
       facts.unshift(`【项目属性 (Python)】核心依赖: ${reqs}`);
     } catch {}
@@ -236,7 +245,7 @@ function getProjectFacts(repoPath) {
   const cargoPath = path.join(repoPath, 'Cargo.toml');
   if (fs.existsSync(cargoPath)) {
     try {
-      const raw = fs.readFileSync(cargoPath, 'utf-8');
+      const raw = readRepoText(repoPath, 'Cargo.toml');
       const lines = raw.split('\n').slice(0, 25).join('\n');
       facts.unshift(`【项目属性 (Rust Cargo)】\n${lines.trim()}`);
     } catch {}
@@ -246,7 +255,7 @@ function getProjectFacts(repoPath) {
   const gomodPath = path.join(repoPath, 'go.mod');
   if (fs.existsSync(gomodPath)) {
     try {
-      const raw = fs.readFileSync(gomodPath, 'utf-8');
+      const raw = readRepoText(repoPath, 'go.mod');
       const lines = raw.split('\n').slice(0, 20).join('\n');
       facts.unshift(`【项目属性 (Go module)】\n${lines.trim()}`);
     } catch {}
@@ -268,6 +277,7 @@ async function scanRepositories() {
 
   for (const root of DEFAULT_SCAN_ROOTS) {
     if (!fs.existsSync(root)) continue;
+    if (fs.existsSync(path.join(root, '.git'))) discovered.set(root, { path: root, isManual: false });
     try {
       const entries = fs.readdirSync(root, { withFileTypes: true });
       for (const entry of entries) {
@@ -285,6 +295,7 @@ async function scanRepositories() {
   const repos = [];
   for (const [repoPath] of discovered.entries()) {
     try {
+      const registered = await registry.register(repoPath);
       const name = path.basename(repoPath);
       let branch = 'unknown';
       let lastCommit = '';
@@ -310,7 +321,7 @@ async function scanRepositories() {
       } catch {}
 
       repos.push({
-        id: Buffer.from(repoPath).toString('base64url'),
+        id: registered.id,
         name,
         path: repoPath,
         branch,
@@ -337,13 +348,14 @@ app.get('/api/repos', async (req, res) => {
 app.post('/api/repos/add', async (req, res) => {
   try {
     let { targetPath } = req.body;
-    if (!targetPath) return res.status(400).json({ error: 'targetPath required' });
+    if (typeof targetPath !== 'string' || !targetPath) return res.status(400).json({ error: 'targetPath required' });
     targetPath = path.resolve(targetPath.replace(/^~/, os.homedir()));
 
     if (!fs.existsSync(path.join(targetPath, '.git'))) {
       return res.status(400).json({ error: '指定目录不是有效的 Git 仓库' });
     }
 
+    targetPath = (await registry.register(targetPath)).path;
     const list = getWatchlist();
     if (!list.includes(targetPath)) {
       list.push(targetPath);
@@ -351,7 +363,7 @@ app.post('/api/repos/add', async (req, res) => {
     }
     res.json({ success: true, path: targetPath });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(err.status || 500).json({ error: err.message });
   }
 });
 
@@ -447,7 +459,7 @@ app.get('/api/tokens/keeper-stats', async (req, res) => {
 
 app.get('/api/repos/:repoId/commits', async (req, res) => {
   try {
-    const repoPath = Buffer.from(req.params.repoId, 'base64url').toString('utf-8');
+    const repoPath = registry.resolve(req.params.repoId);
     if (!fs.existsSync(repoPath)) return res.status(404).json({ error: 'Repo not found' });
 
     const statusOut = await runGit('status --porcelain', repoPath);
@@ -501,7 +513,7 @@ app.get('/api/repos/:repoId/commits', async (req, res) => {
 
     res.json({ success: true, commits, presets, repoPath, dirtyCount: uncommittedFiles.length });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(err.status || 500).json({ error: err.message });
   }
 });
 
@@ -523,14 +535,14 @@ async function getWorkingTreeDiff(repoPath) {
           if (relPath.startsWith('"') && relPath.endsWith('"')) {
             relPath = relPath.slice(1, -1);
           }
-          if (isNoiseFile(relPath)) continue;
+          if (isNoiseFile(relPath) || isSensitiveFile(relPath)) continue;
 
           const fullPath = path.join(repoPath, relPath);
           if (fs.existsSync(fullPath) && fs.statSync(fullPath).isFile()) {
             const size = fs.statSync(fullPath).size;
             if (size > 0 && size < 300000) {
               try {
-                const buf = fs.readFileSync(fullPath);
+                const buf = Buffer.from(readRepoText(repoPath, relPath, 300000));
                 // 排除二进制文件 (含 null 字节)
                 const isBinary = buf.slice(0, 512).includes(0);
                 if (!isBinary) {
@@ -555,7 +567,7 @@ async function getWorkingTreeDiff(repoPath) {
 // 获取 Diff 与文件结构化索引
 app.get('/api/repos/:repoId/diff', async (req, res) => {
   try {
-    const repoPath = Buffer.from(req.params.repoId, 'base64url').toString('utf-8');
+    const repoPath = registry.resolve(req.params.repoId);
     const rawTarget = req.query.target || 'working-tree';
     const target = rawTarget.startsWith('range:') ? rawTarget.slice(6) : rawTarget;
 
@@ -612,7 +624,7 @@ app.get('/api/repos/:repoId/diff', async (req, res) => {
       fallbackHead
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(err.status || 500).json({ error: err.message });
   }
 });
 
@@ -659,9 +671,8 @@ app.post('/api/mentor/analyze', async (req, res) => {
     history = [] // P1: 多轮对话记忆上下文
   } = req.body;
 
-  if (!repoPath || !fs.existsSync(repoPath)) {
-    return res.status(400).json({ error: 'Invalid repoPath' });
-  }
+  try { registry.resolvePath(repoPath); }
+  catch (err) { return res.status(err.status || 400).json({ error: err.message }); }
 
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
@@ -728,6 +739,11 @@ app.post('/api/mentor/analyze', async (req, res) => {
     // 2. 智能过滤噪音并提取干净 Diff
     const parsedFiles = parseDiffFiles(rawDiff);
     const cleanDiff = getCleanDiffForMentor(parsedFiles, focusFile);
+    if (!cleanDiff.trim()) {
+      sendEvent({ type: 'error', message: '选中的变动均为敏感文件或没有可分析的文本代码' });
+      res.end();
+      return;
+    }
     const projectFacts = getProjectFacts(repoPath);
 
     sendEvent({ 
@@ -807,8 +823,8 @@ ${cleanDiff}
     });
 
     if (!response.ok) {
-      const errText = await response.text();
-      sendEvent({ type: 'error', message: `API 请求失败 (${response.status}): ${errText}` });
+      await response.body?.cancel();
+      sendEvent({ type: 'error', message: `API 请求失败 (${response.status})，请检查代理凭据和模型可用性` });
       res.end();
       return;
     }

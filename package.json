@@ -7,13 +7,30 @@
   "scripts": {
     "start": "node server.js",
     "test": "node --test test/*.test.js",
-    "check": "node --check server.js && node --check public/app.js && bash -n start.sh"
+    "check": "node --check server.js && node --check public/app.js && bash -n start.sh",
+    "build": "node scripts/build-assets.js",
+    "prestart": "npm run build",
+    "test:browser": "playwright test"
   },
   "dependencies": {
-    "cors": "^2.8.5",
-    "express": "^4.21.2"
+    "dompurify": "3.4.17",
+    "express": "^4.21.2",
+    "highlight.js": "11.9.0",
+    "lucide": "1.55.0",
+    "marked": "18.1.1",
+    "mermaid": "10.9.8"
   },
   "engines": {
     "node": ">=22"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.64.0",
+    "@tailwindcss/node": "4.3.3",
+    "@tailwindcss/oxide": "4.3.3",
+    "esbuild": "0.28.2",
+    "tailwindcss": "4.3.3"
+  },
+  "overrides": {
+    "katex": "0.18.2"
   }
 }

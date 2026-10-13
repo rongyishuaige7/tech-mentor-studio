@@ -15,12 +15,28 @@ let currentDiffAbortController = null;
 // P1: 多轮对话记忆栈 [{ role: 'user' | 'assistant', content: string }]
 let conversationHistory = [];
 
+let localSessionPromise;
+async function apiFetch(url, options = {}) {
+  localSessionPromise ||= fetch('/api/session', { credentials: 'same-origin' }).then(async response => {
+    if (!response.ok) throw new Error('本机会话初始化失败，请刷新页面');
+    return (await response.json()).token;
+  }).catch(error => { localSessionPromise = null; throw error; });
+  const token = await localSessionPromise;
+  options.signal?.throwIfAborted();
+  const headers = { ...options.headers, 'X-Local-Token': token };
+  return fetch(url, { ...options, headers, credentials: 'same-origin' });
+}
+
+function renderMarkdown(text) {
+  return DOMPurify.sanitize(marked.parse(text), { USE_PROFILES: { html: true }, ALLOW_DATA_ATTR: false, FORBID_TAGS: ['style', 'form', 'input', 'button', 'iframe'], FORBID_ATTR: ['style', 'id', 'name'] });
+}
+
 document.addEventListener('DOMContentLoaded', () => {
   if (window.mermaid) {
     mermaid.initialize({
       startOnLoad: false,
       theme: 'dark',
-      securityLevel: 'loose'
+      securityLevel: 'strict'
     });
   }
 
@@ -48,12 +64,12 @@ async function loadModels() {
   const select = document.getElementById('model-select');
   if (!select) return;
   try {
-    const res = await fetch('/api/models');
+    const res = await apiFetch('/api/models');
     const data = await res.json();
     if (data.models && Array.isArray(data.models) && data.models.length > 0) {
       const currentVal = select.value;
       select.innerHTML = data.models.map(m => `
-        <option value="${m.id}" ${m.id === currentVal ? 'selected' : ''}>${escapeHtml(m.name)}</option>
+        <option value="${escapeHtml(m.id)}" ${m.id === currentVal ? 'selected' : ''}>${escapeHtml(m.name)}</option>
       `).join('');
     }
   } catch {}
@@ -67,7 +83,7 @@ async function loadKeeperStats() {
   if (!textEl) return;
 
   try {
-    const res = await fetch('/api/tokens/keeper-stats');
+    const res = await apiFetch('/api/tokens/keeper-stats');
     const data = await res.json();
     if (!data.success) {
       textEl.textContent = 'CPA 8317 就绪';
@@ -147,7 +163,7 @@ function renderCommitPresets(presets) {
     return;
   }
   container.innerHTML = presets.map(p => `
-    <button onclick="selectTarget('${p.hash}')" 
+    <button data-action="target" data-value="${escapeHtml(p.hash)}"
             class="px-1.5 py-0.5 rounded text-[10px] font-mono transition border ${
               activeTarget === p.hash 
                 ? 'bg-indigo-600 border-indigo-500 text-white font-medium' 
@@ -159,6 +175,18 @@ function renderCommitPresets(presets) {
 }
 
 function setupEventListeners() {
+  document.addEventListener('click', event => {
+    const button = event.target.closest('[data-action]');
+    if (!button) return;
+    const value = button.dataset.value;
+    switch (button.dataset.action) {
+      case 'repo': window.selectRepoById(value); break;
+      case 'target': window.selectTarget(value); break;
+      case 'focus': window.setFocusFile(value); break;
+      case 'focus-all': window.setFocusFile(null); break;
+      case 'ask': window.quickAsk(value); break;
+    }
+  });
   document.getElementById('btn-refresh').addEventListener('click', loadRepos);
   document.getElementById('repo-search').addEventListener('input', handleRepoFilter);
   document.getElementById('btn-add-repo').addEventListener('click', handleAddRepo);
@@ -222,7 +250,7 @@ async function loadRepos() {
   listEl.innerHTML = '<div class="text-xs text-slate-500 text-center py-8">正在扫描本地 Git 仓库...</div>';
 
   try {
-    const res = await fetch('/api/repos');
+    const res = await apiFetch('/api/repos');
     const data = await res.json();
     if (!data.success) throw new Error(data.error);
 
@@ -234,7 +262,7 @@ async function loadRepos() {
       selectRepo(allRepos[0]);
     }
   } catch (err) {
-    listEl.innerHTML = `<div class="text-xs text-rose-400 text-center py-6">加载仓库失败: ${err.message}</div>`;
+    listEl.innerHTML = `<div class="text-xs text-rose-400 text-center py-6">加载仓库失败: ${escapeHtml(err.message)}</div>`;
   }
 }
 
@@ -250,7 +278,7 @@ function renderRepoList(repos) {
     const hasDirty = repo.dirtyCount > 0;
 
     return `
-      <div onclick="selectRepoById('${repo.id}')" 
+      <div data-action="repo" data-value="${escapeHtml(repo.id)}"
            class="p-2.5 rounded-lg cursor-pointer transition flex flex-col gap-1 border ${
              isSelected 
                ? 'bg-indigo-600/15 border-indigo-500/40 text-white' 
@@ -302,7 +330,7 @@ async function handleAddRepo() {
   if (!targetPath) return;
 
   try {
-    const res = await fetch('/api/repos/add', {
+    const res = await apiFetch('/api/repos/add', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ targetPath })
@@ -340,7 +368,7 @@ async function selectRepo(repo) {
   commitListEl.innerHTML = '<div class="text-xs text-slate-500 text-center py-6">正在读取变动记录...</div>';
 
   try {
-    const res = await fetch(`/api/repos/${repo.id}/commits`, { signal: controller.signal });
+    const res = await apiFetch(`/api/repos/${repo.id}/commits`, { signal: controller.signal });
     const data = await res.json();
     if (!data.success) throw new Error(data.error);
 
@@ -374,7 +402,7 @@ function renderCommitList(commits) {
     const isWorkingTree = c.isWorkingTree;
 
     return `
-      <div onclick="selectTarget('${c.hash}')" 
+      <div data-action="target" data-value="${escapeHtml(c.hash)}"
            class="p-2 px-3 cursor-pointer transition flex items-center justify-between border-l-2 ${
              isSelected 
                ? 'bg-indigo-600/20 border-indigo-500 text-white font-medium' 
@@ -427,7 +455,7 @@ async function fetchDiff(repoId, target) {
     `提交 ${target.slice(0, 8)}`;
 
   try {
-    const res = await fetch(`/api/repos/${repoId}/diff?target=${encodeURIComponent(target)}`, { signal: controller.signal });
+    const res = await apiFetch(`/api/repos/${repoId}/diff?target=${encodeURIComponent(target)}`, { signal: controller.signal });
     const data = await res.json();
     if (!data.success) throw new Error(data.error);
 
@@ -461,7 +489,7 @@ async function fetchDiff(repoId, target) {
               没有未暂存的代码改动。可直接查看最新提交 [${data.fallbackHead.shortHash}]，或点击上方快捷带读让导师剖析最新提交。
             </p>
             <div class="pt-2">
-              <button onclick="selectTarget('${data.fallbackHead.hash}')" class="px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-medium transition shadow shadow-indigo-600/30 flex items-center gap-1.5 mx-auto">
+              <button data-action="target" data-value="${escapeHtml(data.fallbackHead.hash)}" class="px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-medium transition shadow shadow-indigo-600/30 flex items-center gap-1.5 mx-auto">
                 <i data-lucide="git-commit" class="w-3.5 h-3.5"></i>
                 一键查看最新提交 [${data.fallbackHead.shortHash}]
               </button>
@@ -502,7 +530,7 @@ function renderFileFilterChips(files) {
   const allActive = currentFocusFile === null;
   let html = `
     <span class="text-slate-500 text-[10px]">变动文件:</span>
-    <button onclick="setFocusFile(null)" 
+    <button data-action="focus-all"
             class="px-2 py-0.5 rounded text-[10px] font-mono transition shrink-0 ${
               allActive ? 'bg-indigo-600 text-white font-medium' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
             }">
@@ -516,7 +544,7 @@ function renderFileFilterChips(files) {
     const isNoise = f.isNoise;
 
     return `
-      <button onclick="setFocusFile('${escapeHtml(f.path)}')" 
+      <button data-action="focus" data-value="${escapeHtml(f.path)}"
               title="${escapeHtml(f.path)}"
               class="px-2 py-0.5 rounded text-[10px] font-mono transition shrink-0 flex items-center gap-1 ${
                 isActive 
@@ -685,8 +713,8 @@ async function startMentorAnalysis(mode, customPrompt = '', resetSession = false
       <div class="flex items-center justify-between pb-2 mb-3 border-b border-slate-800/80">
         <span class="text-xs font-semibold text-indigo-300 flex items-center gap-1.5 font-mono">
           <i data-lucide="compass" class="w-3.5 h-3.5 text-indigo-400"></i>
-          Tech Mentor (${modelSelect.options[modelSelect.selectedIndex]?.text?.split(' ')[0] || 'AI'})
-          ${currentFocusFile ? `<span class="text-[10px] px-1.5 py-0.2 rounded bg-indigo-500/20 text-indigo-300">聚焦: ${currentFocusFile.split('/').pop()}</span>` : ''}
+          Tech Mentor (${escapeHtml(modelSelect.options[modelSelect.selectedIndex]?.text?.split(' ')[0] || 'AI')})
+          ${currentFocusFile ? `<span class="text-[10px] px-1.5 py-0.2 rounded bg-indigo-500/20 text-indigo-300">聚焦: ${escapeHtml(currentFocusFile.split('/').pop())}</span>` : ''}
         </span>
         <span class="text-[10px] text-slate-500 font-mono">${new Date().toLocaleTimeString()}</span>
       </div>
@@ -717,7 +745,7 @@ async function startMentorAnalysis(mode, customPrompt = '', resetSession = false
   };
 
   try {
-    const response = await fetch('/api/mentor/analyze', {
+    const response = await apiFetch('/api/mentor/analyze', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
@@ -747,7 +775,7 @@ async function startMentorAnalysis(mode, customPrompt = '', resetSession = false
             statusText.textContent = event.message;
           } else if (event.type === 'chunk' && !finalized) {
             currentTurnMarkdown += event.text;
-            article.innerHTML = marked.parse(currentTurnMarkdown);
+            article.innerHTML = renderMarkdown(currentTurnMarkdown);
             chatStream.scrollTop = chatStream.scrollHeight;
           } else if (event.type === 'usage') {
             currentTurnUsage = event.usage;
@@ -755,7 +783,7 @@ async function startMentorAnalysis(mode, customPrompt = '', resetSession = false
             throw new Error(event.message || '分析失败');
           } else if ((event.type === 'finished' || event.type === 'done') && !finalized) {
             finalized = true;
-            article.innerHTML = marked.parse(currentTurnMarkdown);
+            article.innerHTML = renderMarkdown(currentTurnMarkdown);
             await postProcessArticle(article);
             if (!isCurrent()) return;
             if (currentTurnUsage) {
@@ -807,16 +835,16 @@ function renderQuickChips(container) {
     <span class="text-slate-500 text-[10px] mr-1 flex items-center gap-1">
       <i data-lucide="zap" class="w-3 h-3 text-amber-400"></i> 快速深入:
     </span>
-    <button class="quick-chip" onclick="quickAsk('请深度展开刚才提出的苏格拉底考题，给出详细推演思路与参考答案')">
+    <button class="quick-chip" data-action="ask" data-value="请深度展开刚才提出的苏格拉底考题，给出详细推演思路与参考答案">
       💡 展开自测题推演
     </button>
-    <button class="quick-chip" onclick="quickAsk('针对本次分析指出的隐蔽暗桩，请给出具体的防御性重构代码')">
+    <button class="quick-chip" data-action="ask" data-value="针对本次分析指出的隐蔽暗桩，请给出具体的防御性重构代码">
       ⚠️ 给出暗坑防御代码
     </button>
-    <button class="quick-chip" onclick="quickAsk('请使用 Mermaid sequenceDiagram 时序图画出最核心的调用链路与异常分支')">
+    <button class="quick-chip" data-action="ask" data-value="请使用 Mermaid sequenceDiagram 时序图画出最核心的调用链路与异常分支">
       📐 绘制时序图
     </button>
-    <button class="quick-chip" onclick="quickAsk('如果在高并发和极端边缘场景下运行，这段代码有什么潜在瓶颈？')">
+    <button class="quick-chip" data-action="ask" data-value="如果在高并发和极端边缘场景下运行，这段代码有什么潜在瓶颈？">
       🚀 极限性能与并发剖析
     </button>
   `;
@@ -954,7 +982,7 @@ async function postProcessArticle(article) {
     const header = document.createElement('div');
     header.className = 'code-block-header';
     header.innerHTML = `
-      <span class="text-slate-400 uppercase font-mono">${lang}</span>
+      <span class="text-slate-400 uppercase font-mono">${escapeHtml(lang)}</span>
       <button class="copy-code-btn text-slate-400 hover:text-slate-100 flex items-center gap-1 transition text-[10px]">
         <i data-lucide="copy" class="w-3 h-3"></i> 复制代码
       </button>
@@ -991,7 +1019,7 @@ async function postProcessArticle(article) {
       pre.replaceWith(container);
     }
     try {
-      await mermaid.run();
+      await mermaid.run({ nodes: Array.from(article.querySelectorAll('.mermaid')) });
     } catch (e) {
       console.warn('Mermaid render error:', e);
     }
@@ -1002,7 +1030,7 @@ async function postProcessArticle(article) {
 
 function escapeHtml(str) {
   if (!str) return '';
-  return str
+  return String(str)
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
