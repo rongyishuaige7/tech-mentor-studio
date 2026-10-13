@@ -3,6 +3,7 @@ let allRepos = [];
 let activeRepo = null;
 let activeTarget = 'working-tree'; // 'working-tree' 或 commit hash
 let currentDiffFiles = [];
+let currentDiffWarnings = [];
 let currentFocusFile = null; // null 表示全部文件
 let currentAbortController = null;
 let mentorSessionVersion = 0;
@@ -443,6 +444,7 @@ async function fetchDiff(repoId, target) {
   const controller = new AbortController();
   currentDiffAbortController = controller;
   currentDiffFiles = [];
+  currentDiffWarnings = [];
   renderFileFilterChips([]);
   document.getElementById('diff-stat-badge').textContent = '加载中';
   const diffEl = document.getElementById('diff-content');
@@ -472,6 +474,7 @@ async function fetchDiff(repoId, target) {
     }
 
     currentDiffFiles = data.files || [];
+    currentDiffWarnings = data.warnings || [];
     renderFileFilterChips(currentDiffFiles);
 
     const statBadge = document.getElementById('diff-stat-badge');
@@ -585,43 +588,41 @@ function renderActiveDiff() {
     textToRender = currentDiffFiles.map(f => f.patch).join('\n\n');
   }
 
-  diffEl.innerHTML = renderFormattedDiff(textToRender);
+  const warnings = currentDiffWarnings.length ? `<div class="p-2 text-amber-300 text-xs">${currentDiffWarnings.map(escapeHtml).join('<br>')}</div>` : '';
+  diffEl.innerHTML = warnings + renderFormattedDiff(textToRender);
 }
 
 // 增强格式化 Diff：支持行号与清晰 Gutter
 function renderFormattedDiff(rawDiff) {
   if (!rawDiff || rawDiff.trim() === '') return '<span class="text-slate-500">// 无差异内容</span>';
-  const lines = rawDiff.split('\n');
-  let oldLine = 0;
-  let newLine = 0;
-
-  return lines.map(line => {
+  let oldLine = 0, newLine = 0, oldRemaining = 0, newRemaining = 0;
+  return rawDiff.split('\n').map(line => {
     const escaped = escapeHtml(line);
-    if (line.startsWith('diff --git ')) {
-      return `<div class="diff-line text-indigo-400 font-bold mt-3 mb-1 border-b border-indigo-900/50 pb-1"><span class="diff-text font-mono">${escaped}</span></div>`;
-    }
-    if (line.startsWith('+++') || line.startsWith('---')) {
-      return `<div class="diff-line text-indigo-300 font-semibold"><span class="diff-num">···</span><span class="diff-text">${escaped}</span></div>`;
-    }
-    if (line.startsWith('@@')) {
-      const m = line.match(/@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
-      if (m) {
-        oldLine = parseInt(m[1], 10);
-        newLine = parseInt(m[2], 10);
-      }
+    const hunk = line.match(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/);
+    if (hunk) {
+      oldLine = Number(hunk[1]); newLine = Number(hunk[3]);
+      oldRemaining = Number(hunk[2] ?? 1); newRemaining = Number(hunk[4] ?? 1);
       return `<div class="diff-line diff-line-hunk"><span class="diff-num">@@</span><span class="diff-text">${escaped}</span></div>`;
     }
-    if (line.startsWith('+')) {
-      const numStr = `${newLine++}`;
-      return `<div class="diff-line diff-line-add"><span class="diff-num">${numStr}</span><span class="diff-text">${escaped}</span></div>`;
+    if (oldRemaining || newRemaining) {
+      if (line.startsWith('+')) {
+        newRemaining--;
+        return `<div class="diff-line diff-line-add"><span class="diff-num">${newLine++}</span><span class="diff-text">${escaped}</span></div>`;
+      }
+      if (line.startsWith('-')) {
+        oldRemaining--;
+        return `<div class="diff-line diff-line-del"><span class="diff-num">${oldLine++}</span><span class="diff-text">${escaped}</span></div>`;
+      }
+      if (line.startsWith(' ')) {
+        oldRemaining--; newRemaining--; oldLine++;
+        return `<div class="diff-line"><span class="diff-num">${newLine++}</span><span class="diff-text">${escaped}</span></div>`;
+      }
     }
-    if (line.startsWith('-')) {
-      const numStr = `${oldLine++}`;
-      return `<div class="diff-line diff-line-del"><span class="diff-num">${numStr}</span><span class="diff-text">${escaped}</span></div>`;
+    if (line.startsWith('diff --git ')) {
+      oldRemaining = 0; newRemaining = 0;
+      return `<div class="diff-line text-indigo-400 font-bold mt-3 mb-1"><span class="diff-text">${escaped}</span></div>`;
     }
-    const numStr = `${newLine++}`;
-    oldLine++;
-    return `<div class="diff-line text-slate-300"><span class="diff-num">${numStr}</span><span class="diff-text">${escaped}</span></div>`;
+    return `<div class="diff-line text-slate-500"><span class="diff-num">···</span><span class="diff-text">${escaped}</span></div>`;
   }).join('');
 }
 

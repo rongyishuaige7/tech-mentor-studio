@@ -1,4 +1,6 @@
-import { localAccess, RepositoryRegistry, readRepoText, isSensitiveFile } from './lib/security.js';
+import { runGit, getStatus, getCommits, getPresets, loadDiff } from './lib/git.js';
+import { getCleanDiffForMentor } from './lib/diff.js';
+import { localAccess, RepositoryRegistry, readRepoText, httpError } from './lib/security.js';
 import { relayCompletion, requestLifecycle } from './lib/stream.js';
 import express from 'express';
 import { exec } from 'child_process';
@@ -12,10 +14,11 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const execAsync = promisify(exec);
 
+export function createApp(options = {}) {
 const app = express();
-const PORT = process.env.PORT || 3300;
-const PROXY_URL = 'http://127.0.0.1:8317/v1/chat/completions';
-const PROXY_KEY = 'REDACTED-LOCAL-KEY';
+const PROXY_URL = options.proxyUrl || process.env.PROXY_URL || 'http://127.0.0.1:8317/v1/chat/completions';
+const fetchImpl = options.fetchImpl || fetch;
+const PROXY_KEY = options.proxyKey || process.env.PROXY_KEY || 'REDACTED-LOCAL-KEY';
 
 const access = localAccess();
 const registry = new RepositoryRegistry();
@@ -26,9 +29,9 @@ app.use(express.json({ limit: '1mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
 // 数据持久化路径
-const DATA_DIR = path.join(__dirname, 'data');
+const DATA_DIR = options.dataDir || path.join(__dirname, 'data');
 if (!fs.existsSync(DATA_DIR)) {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
+  fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
 }
 const WATCHLIST_FILE = path.join(DATA_DIR, 'watchlist.json');
 
@@ -39,7 +42,7 @@ function getWatchlist() {
       if (!Array.isArray(list) || !list.every(p => typeof p === 'string')) throw new Error('关注列表格式无效');
       return list;
     } catch {
-      return [];
+      throw httpError(500, '关注列表无法读取，原文件已保留，请检查格式');
     }
   }
   return [];
@@ -52,136 +55,13 @@ function saveWatchlist(list) {
 }
 
 // 默认扫描的顶级目录
-const DEFAULT_SCAN_ROOTS = process.env.SCAN_ROOTS_JSON ? JSON.parse(process.env.SCAN_ROOTS_JSON) : [
+const DEFAULT_SCAN_ROOTS = options.scanRoots || (process.env.SCAN_ROOTS_JSON ? JSON.parse(process.env.SCAN_ROOTS_JSON) : [
   path.join(os.homedir(), 'Desktop'),
   path.join(os.homedir(), 'Developer'),
   path.join(os.homedir(), 'Github'),
   path.join(os.homedir())
-];
-
-// 辅助：执行 git 命令
-async function runGit(args, cwd) {
-  try {
-    const { stdout } = await execAsync(`git ${args}`, {
-      cwd,
-      maxBuffer: 30 * 1024 * 1024,
-      env: { ...process.env, LANG: 'en_US.UTF-8' }
-    });
-    return stdout.trim();
-  } catch (err) {
-    if (err.stdout) return err.stdout.trim();
-    throw err;
-  }
-}
-
-// ----------------- P0: 智能 Diff 过滤与文件结构化 -----------------
-
-const NOISE_PATTERNS = [
-  /package-lock\.json$/,
-  /pnpm-lock\.yaml$/,
-  /yarn\.lock$/,
-  /Cargo\.lock$/,
-  /composer\.lock$/,
-  /Pipfile\.lock$/,
-  /poetry\.lock$/,
-  /\.min\.(js|css)$/,
-  /\.bundle\.js$/,
-  /\.map$/,
-  /\.(png|jpe?g|gif|svg|ico|webp|woff2?|ttf|eot|mp4|webm|zip|tar\.gz)$/i,
-  /\.DS_Store$/,
-  /\.pyc$/,
-  /__pycache__/
-];
-
-function isNoiseFile(filePath) {
-  return NOISE_PATTERNS.some(re => re.test(filePath));
-}
-
-function parseDiffFiles(diffText) {
-  if (!diffText) return [];
-  const files = [];
-
-  // 关键修复：截取首个 diff --git 之后的内容，消除 commit header 误作为文件的 bug
-  const gitDiffIdx = diffText.indexOf('diff --git ');
-  if (gitDiffIdx === -1) return [];
-
-  const diffOnly = diffText.slice(gitDiffIdx);
-  const chunks = diffOnly.split(/^diff --git /m).filter(Boolean);
-
-  for (const chunk of chunks) {
-    const lines = chunk.split('\n');
-    const header = lines[0] || '';
-    
-    // 鲁棒提取文件路径 (支持引号、空格、删除、新增与重命名)
-    let filePath = 'unknown';
-    let oldPath = null;
-    const match = header.match(/"?a\/(.+?)"?\s+"?b\/(.+?)"?$/);
-    if (match) {
-      const pA = match[1].replace(/^"|"$/g, '').trim();
-      const pB = match[2].replace(/^"|"$/g, '').trim();
-      if (pB === '/dev/null' || pB === 'dev/null') {
-        filePath = pA;
-        oldPath = pA;
-      } else if (pA === '/dev/null' || pA === 'dev/null') {
-        filePath = pB;
-      } else {
-        filePath = pB;
-        if (pA !== pB) oldPath = pA;
-      }
-    } else {
-      for (const line of lines.slice(1, 6)) {
-        if (line.startsWith('+++ b/')) {
-          filePath = line.slice(6).replace(/^"|"$/g, '').trim();
-          break;
-        }
-      }
-      if (filePath === 'unknown' && lines[1]) {
-        filePath = lines[1].trim();
-      }
-    }
-
-    let additions = 0;
-    let deletions = 0;
-    for (const l of lines) {
-      if (l.startsWith('+') && !l.startsWith('+++')) additions++;
-      else if (l.startsWith('-') && !l.startsWith('---')) deletions++;
-    }
-
-    const isNoise = isNoiseFile(filePath);
-
-    files.push({
-      path: filePath,
-      oldPath,
-      additions,
-      deletions,
-      isNoise,
-      isSensitive: isSensitiveFile(filePath),
-      patch: 'diff --git ' + chunk
-    });
-  }
-
-  return files;
-}
-
-function getCleanDiffForMentor(diffFiles, focusFile = null) {
-  let selected = diffFiles.filter(file => !file.isSensitive);
-  if (focusFile) {
-    selected = selected.filter(f => f.path === focusFile);
-  }
-  // 排除噪音文件
-  const codeFiles = selected.filter(f => !f.isNoise);
-  const targetFiles = codeFiles.length > 0 ? codeFiles : selected;
-
-  let combined = '';
-  for (const f of targetFiles) {
-    if ((combined + f.patch).length > 60000) {
-      combined += `\n\n# ... [文件 ${f.path} 及后续变动过长已自动截断] ...\n`;
-      break;
-    }
-    combined += f.patch + '\n';
-  }
-  return combined;
-}
+]);
+if (!Array.isArray(DEFAULT_SCAN_ROOTS) || !DEFAULT_SCAN_ROOTS.every(root => typeof root === 'string' && path.isAbsolute(root))) throw new Error('SCAN_ROOTS_JSON 必须是绝对路径数组');
 
 // ----------------- P0: 项目级事实源 (SSOT) 自动探针 (支持 Node/Python/Rust/Go) -----------------
 
@@ -265,80 +145,54 @@ function getProjectFacts(repoPath) {
 }
 
 // 扫描 Git 仓库
-async function scanRepositories() {
-  const discovered = new Map();
-  const watchlist = getWatchlist();
-
-  for (const p of watchlist) {
-    if (fs.existsSync(path.join(p, '.git'))) {
-      discovered.set(p, { path: p, isManual: true });
-    }
-  }
-
-  for (const root of DEFAULT_SCAN_ROOTS) {
-    if (!fs.existsSync(root)) continue;
-    if (fs.existsSync(path.join(root, '.git'))) discovered.set(root, { path: root, isManual: false });
-    try {
-      const entries = fs.readdirSync(root, { withFileTypes: true });
-      for (const entry of entries) {
+let scanCache = null;
+let scanPending = null;
+async function scanRepositories(refresh = false) {
+  if (!refresh && scanCache && Date.now() - scanCache.at < 5000) return scanCache.repos;
+  if (scanPending) return scanPending;
+  scanPending = (async () => {
+    const discovered = new Set(getWatchlist());
+    for (const root of DEFAULT_SCAN_ROOTS) {
+      if (!fs.existsSync(root)) continue;
+      if (fs.existsSync(path.join(root, '.git'))) discovered.add(root);
+      for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
         if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
-        const fullPath = path.join(root, entry.name);
-        if (fs.existsSync(path.join(fullPath, '.git'))) {
-          if (!discovered.has(fullPath)) {
-            discovered.set(fullPath, { path: fullPath, isManual: false });
-          }
+        const candidate = path.join(root, entry.name);
+        if (fs.existsSync(path.join(candidate, '.git'))) discovered.add(candidate);
+      }
+    }
+    const paths = [...discovered]; const repos = new Map(); let cursor = 0;
+    async function worker() {
+      while (cursor < paths.length) {
+        const repoPath = paths[cursor++];
+        let registered;
+        try {
+          registered = await registry.register(repoPath);
+          const [branch, commits, status] = await Promise.all([
+            runGit(['branch', '--show-current'], registered.path),
+            getCommits(registered.path, 1), getStatus(registered.path)
+          ]);
+          const latest = commits[0];
+          repos.set(registered.id, { ...registered, name: path.basename(registered.path),
+            branch: branch.trim() || 'HEAD', dirtyCount: status.length,
+            lastCommit: latest ? { hash: latest.shortHash, msg: latest.msg, time: latest.relTime, author: latest.author } : null });
+        } catch (error) {
+          if (registered) repos.set(registered.id, { ...registered, name: path.basename(registered.path), branch: 'unknown', dirtyCount: 0, error: error.message });
         }
       }
-    } catch {}
-  }
-
-  const repos = [];
-  for (const [repoPath] of discovered.entries()) {
-    try {
-      const registered = await registry.register(repoPath);
-      const name = path.basename(repoPath);
-      let branch = 'unknown';
-      let lastCommit = '';
-      let dirtyCount = 0;
-
-      try {
-        branch = await runGit('branch --show-current', repoPath) || 'HEAD';
-      } catch {}
-
-      try {
-        const logLine = await runGit('log -1 --pretty=format:"%h|%s|%ar|%an"', repoPath);
-        if (logLine) {
-          const [hash, msg, time, author] = logLine.split('|');
-          lastCommit = { hash, msg, time, author };
-        }
-      } catch {}
-
-      try {
-        const status = await runGit('status --porcelain', repoPath);
-        if (status) {
-          dirtyCount = status.split('\n').filter(Boolean).length;
-        }
-      } catch {}
-
-      repos.push({
-        id: registered.id,
-        name,
-        path: repoPath,
-        branch,
-        lastCommit,
-        dirtyCount
-      });
-    } catch {}
-  }
-
-  return repos.sort((a, b) => (b.dirtyCount > 0 ? 1 : 0) - (a.dirtyCount > 0 ? 1 : 0));
+    }
+    await Promise.all(Array.from({ length: Math.min(4, paths.length) }, worker));
+    const result = [...repos.values()].sort((a, b) => Number(b.dirtyCount > 0) - Number(a.dirtyCount > 0) || a.name.localeCompare(b.name));
+    scanCache = { at: Date.now(), repos: result }; return result;
+  })();
+  try { return await scanPending; } finally { scanPending = null; }
 }
 
 // ----------------- API 路由 -----------------
 
 app.get('/api/repos', async (req, res) => {
   try {
-    const repos = await scanRepositories();
+    const repos = await scanRepositories(req.query.refresh === '1');
     res.json({ success: true, repos });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -361,13 +215,14 @@ app.post('/api/repos/add', async (req, res) => {
       list.push(targetPath);
       saveWatchlist(list);
     }
+    scanCache = null;
     res.json({ success: true, path: targetPath });
   } catch (err) {
     res.status(err.status || 500).json({ error: err.message });
   }
 });
 
-const KEEPER_DB_PATH = '/opt/homebrew/var/cpa-usage-keeper/app.db';
+const KEEPER_DB_PATH = options.keeperPath || '/opt/homebrew/var/cpa-usage-keeper/app.db';
 
 async function getKeeperTokenStats() {
   if (!fs.existsSync(KEEPER_DB_PATH)) return null;
@@ -460,172 +315,20 @@ app.get('/api/tokens/keeper-stats', async (req, res) => {
 app.get('/api/repos/:repoId/commits', async (req, res) => {
   try {
     const repoPath = registry.resolve(req.params.repoId);
-    if (!fs.existsSync(repoPath)) return res.status(404).json({ error: 'Repo not found' });
-
-    const statusOut = await runGit('status --porcelain', repoPath);
-    const uncommittedFiles = statusOut ? statusOut.split('\n').filter(Boolean) : [];
-
-    let commits = [];
-    try {
-      const logs = await runGit('log -n 30 --pretty=format:"%H|%h|%s|%an|%ar|%ci"', repoPath);
-      if (logs) {
-        commits = logs.split('\n').filter(Boolean).map(line => {
-          const [hash, shortHash, msg, author, relTime, fullTime] = line.split('|');
-          return { hash, shortHash, msg, author, relTime, fullTime, isWorkingTree: false };
-        });
-      }
-    } catch {}
-
-    const presets = [];
-    if (commits.length >= 3) {
-      presets.push({
-        hash: 'range:HEAD~3..HEAD',
-        shortHash: 'HEAD~3..0',
-        msg: '📦 聚合最近 3 次提交变更 (多步功能打包分析)',
-        author: 'Git Range',
-        relTime: 'Last 3 commits',
-        isRange: true
-      });
-    }
-    if (commits.length >= 5) {
-      presets.push({
-        hash: 'range:HEAD~5..HEAD',
-        shortHash: 'HEAD~5..0',
-        msg: '📦 聚合最近 5 次提交变更 (里程碑架构演进)',
-        author: 'Git Range',
-        relTime: 'Last 5 commits',
-        isRange: true
-      });
-    }
-
-    if (uncommittedFiles.length > 0) {
-      commits.unshift({
-        hash: 'working-tree',
-        shortHash: 'HEAD*',
-        msg: `⚡ 当前未提交的改动 (${uncommittedFiles.length} 个文件变更)`,
-        author: 'You (Uncommitted)',
-        relTime: 'Just now',
-        fullTime: new Date().toISOString(),
-        isWorkingTree: true,
-        fileCount: uncommittedFiles.length
-      });
-    }
-
-    res.json({ success: true, commits, presets, repoPath, dirtyCount: uncommittedFiles.length });
-  } catch (err) {
-    res.status(err.status || 500).json({ error: err.message });
-  }
+    const [status, commits, presets] = await Promise.all([getStatus(repoPath), getCommits(repoPath), getPresets(repoPath)]);
+    if (status.length) commits.unshift({ hash: 'working-tree', shortHash: 'HEAD*',
+      msg: `当前未提交改动 (${status.length} 个文件)`, author: 'You', relTime: 'Just now',
+      isWorkingTree: true, fileCount: status.length });
+    res.json({ success: true, commits, presets, repoPath, dirtyCount: status.length });
+  } catch (error) { res.status(error.status || 500).json({ success: false, error: error.message }); }
 });
 
-// 提取工作区变动 (包括跟踪文件的修改与全新未跟踪文件 ??)
-async function getWorkingTreeDiff(repoPath) {
-  let diffText = '';
-  try {
-    diffText = await runGit('diff HEAD', repoPath) || await runGit('diff', repoPath) || await runGit('diff --cached', repoPath);
-  } catch {}
-
-  // 补全新增但尚未被 Git 跟踪的文件 (Untracked ??)
-  try {
-    const statusOut = await runGit('status --porcelain', repoPath);
-    if (statusOut) {
-      const lines = statusOut.split('\n');
-      for (const line of lines) {
-        if (line.startsWith('?? ')) {
-          let relPath = line.slice(3).trim();
-          if (relPath.startsWith('"') && relPath.endsWith('"')) {
-            relPath = relPath.slice(1, -1);
-          }
-          if (isNoiseFile(relPath) || isSensitiveFile(relPath)) continue;
-
-          const fullPath = path.join(repoPath, relPath);
-          if (fs.existsSync(fullPath) && fs.statSync(fullPath).isFile()) {
-            const size = fs.statSync(fullPath).size;
-            if (size > 0 && size < 300000) {
-              try {
-                const buf = Buffer.from(readRepoText(repoPath, relPath, 300000));
-                // 排除二进制文件 (含 null 字节)
-                const isBinary = buf.slice(0, 512).includes(0);
-                if (!isBinary) {
-                  const content = buf.toString('utf-8');
-                  const fileLines = content.split('\n');
-                  diffText += `\ndiff --git a/${relPath} b/${relPath}\nnew file mode 100644\n--- /dev/null\n+++ b/${relPath}\n@@ -0,0 +1,${fileLines.length} @@\n`;
-                  for (const fl of fileLines) {
-                    diffText += '+' + fl + '\n';
-                  }
-                }
-              } catch {}
-            }
-          }
-        }
-      }
-    }
-  } catch {}
-
-  return diffText;
-}
-
-// 获取 Diff 与文件结构化索引
 app.get('/api/repos/:repoId/diff', async (req, res) => {
   try {
     const repoPath = registry.resolve(req.params.repoId);
-    const rawTarget = req.query.target || 'working-tree';
-    const target = rawTarget.startsWith('range:') ? rawTarget.slice(6) : rawTarget;
-
-    // 安全防注入校验：只允许合法 git 引用/提交范围或 working-tree
-    if (!/^(working-tree|[a-zA-Z0-9_\.\-\~\^]+(\.\.[a-zA-Z0-9_\.\-\~\^]+)?)$/.test(target)) {
-      return res.status(400).json({ error: '无效或不安全的 Git 目标引用' });
-    }
-
-    let diffText = '';
-    let statText = '';
-    let summaryText = '';
-    let isCleanWorkingTree = false;
-    let fallbackHead = null;
-
-    if (target === 'working-tree') {
-      diffText = await getWorkingTreeDiff(repoPath);
-      statText = await runGit('diff --stat HEAD', repoPath) || await runGit('diff --stat', repoPath);
-      summaryText = await runGit('diff --compact-summary HEAD', repoPath) || await runGit('diff --compact-summary', repoPath);
-
-      if (!diffText || diffText.trim() === '') {
-        isCleanWorkingTree = true;
-        try {
-          const headHash = await runGit('rev-parse --short HEAD', repoPath);
-          const headMsg = await runGit('log -1 --pretty=format:"%s (%an, %ar)" HEAD', repoPath);
-          fallbackHead = { hash: 'HEAD', shortHash: headHash, msg: headMsg };
-        } catch {}
-      }
-    } else if (target.includes('..')) {
-      diffText = await runGit(`diff -p ${target}`, repoPath);
-      statText = await runGit(`diff --stat ${target}`, repoPath);
-      summaryText = await runGit(`diff --compact-summary ${target}`, repoPath);
-    } else {
-      diffText = await runGit(`show -p -m --first-parent ${target}`, repoPath);
-      if (!diffText || diffText.trim() === '') {
-        diffText = await runGit(`show -p ${target}`, repoPath);
-      }
-      statText = await runGit(`show --stat ${target}`, repoPath);
-      summaryText = await runGit(`show --compact-summary ${target}`, repoPath);
-    }
-
-    const files = parseDiffFiles(diffText);
-    const facts = getProjectFacts(repoPath);
-
-    res.json({
-      success: true,
-      target: rawTarget,
-      diffText,
-      statText,
-      summaryText,
-      repoPath,
-      files,
-      hasFacts: Boolean(facts),
-      isCleanWorkingTree,
-      fallbackHead
-    });
-  } catch (err) {
-    res.status(err.status || 500).json({ error: err.message });
-  }
+    const data = await loadDiff(repoPath, req.query.target || 'working-tree');
+    res.json({ ...data, repoPath, hasFacts: Boolean(getProjectFacts(repoPath)) });
+  } catch (error) { res.status(error.status || 500).json({ success: false, error: error.message }); }
 });
 
 app.get('/api/models', async (req, res) => {
@@ -638,7 +341,7 @@ app.get('/api/models', async (req, res) => {
   ];
 
   try {
-    const cpaRes = await fetch('http://127.0.0.1:8317/v1/models', {
+    const cpaRes = await fetchImpl('http://127.0.0.1:8317/v1/models', {
       headers: { 'Authorization': `Bearer ${PROXY_KEY}` },
       signal: AbortSignal.timeout(2000)
     });
@@ -688,68 +391,20 @@ app.post('/api/mentor/analyze', async (req, res) => {
   try {
     sendEvent({ type: 'status', message: '正在加载项目事实源与 Git 差异...' });
 
-    // 1. 提取 Diff 与项目全局事实
-    let rawDiff = '';
-    let commitInfo = '';
-    const rawTarget = target || 'working-tree';
-    const cleanTarget = rawTarget.startsWith('range:') ? rawTarget.slice(6) : rawTarget;
-
-    if (!/^(working-tree|[a-zA-Z0-9_\.\-\~\^]+(\.\.[a-zA-Z0-9_\.\-\~\^]+)?)$/.test(cleanTarget)) {
-      sendEvent({ type: 'error', message: '无效或不安全的 Git 目标引用' });
-      res.end();
-      return;
+    let diff = await loadDiff(repoPath, target || 'working-tree', { signal: lifecycle.signal });
+    if (diff.isCleanWorkingTree && diff.fallbackHead) {
+      sendEvent({ type: 'status', message: `工作区干净，使用最新提交 ${diff.fallbackHead.shortHash}` });
+      diff = await loadDiff(repoPath, diff.fallbackHead.hash, { signal: lifecycle.signal });
     }
-
-    if (cleanTarget === 'working-tree') {
-      rawDiff = await getWorkingTreeDiff(repoPath);
-      commitInfo = '【当前工作区未提交修改 (Working Tree)】';
-
-      // 💡 智能自动降级：如果工作区干净 (rawDiff 为空)，自动回退至最新 HEAD 提交进行带读
-      if (!rawDiff || rawDiff.trim() === '') {
-        try {
-          const headHash = await runGit('rev-parse --short HEAD', repoPath);
-          if (headHash) {
-            sendEvent({ 
-              type: 'status', 
-              message: `💡 当前工作区代码干净无未暂存改动，导师已为你自动切换至最新提交 [${headHash}] 展开深度带读...` 
-            });
-            commitInfo = await runGit(`log -1 --pretty=format:"最新提交: %h - %s (%an, %ar)" HEAD`, repoPath);
-            rawDiff = await runGit(`show -p -m --first-parent HEAD`, repoPath) || await runGit(`show -p HEAD`, repoPath);
-          }
-        } catch {}
-      }
-    } else if (cleanTarget.includes('..')) {
-      const [base, head] = cleanTarget.split('..');
-      commitInfo = `【复合区间聚合对比: ${base} 至 ${head}】`;
-      rawDiff = await runGit(`diff -p ${cleanTarget}`, repoPath);
-    } else {
-      commitInfo = await runGit(`log -1 --pretty=format:"提交: %h - %s (%an, %ar)" ${cleanTarget}`, repoPath);
-      rawDiff = await runGit(`show -p -m --first-parent ${cleanTarget}`, repoPath) || await runGit(`show -p ${cleanTarget}`, repoPath);
-    }
-
-    if (!rawDiff || rawDiff.trim() === '') {
-      sendEvent({ 
-        type: 'error', 
-        message: '当前选中的目标没有检测到代码变动（Diff 为空）。\n👉 请在提交列表中选择有代码变动的历史提交 (Commit) 或使用【多提交聚合】对比！' 
-      });
-      res.end();
-      return;
-    }
-
-    // 2. 智能过滤噪音并提取干净 Diff
-    const parsedFiles = parseDiffFiles(rawDiff);
+    const parsedFiles = diff.files;
     const cleanDiff = getCleanDiffForMentor(parsedFiles, focusFile);
     if (!cleanDiff.trim()) {
-      sendEvent({ type: 'error', message: '选中的变动均为敏感文件或没有可分析的文本代码' });
-      res.end();
-      return;
+      sendEvent({ type: 'error', message: '选中的目标没有可分析的文本代码，敏感文件和符号链接已排除' });
+      res.end(); return;
     }
+    const commitInfo = diff.commitInfo;
     const projectFacts = getProjectFacts(repoPath);
-
-    sendEvent({ 
-      type: 'status', 
-      message: projectFacts ? '已命中项目全局规范 (CLAUDE.md 等)，导师正在结合系统约束深度解析...' : '导师正在分析架构意图与代码实相...' 
-    });
+    sendEvent({ type: 'status', message: '已提取代码差异和可用项目文档，正在分析...' });
 
     // 3. 构建系统 Prompt 与项目约束
     const systemInstruction = `你是一位世界级的系统架构师和技术领航导师（Tech Mentor）。
@@ -812,7 +467,7 @@ ${cleanDiff}
       messages
     };
 
-    const response = await fetch(PROXY_URL, {
+    const response = await fetchImpl(PROXY_URL, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -840,7 +495,17 @@ ${cleanDiff}
   }
 });
 
-app.listen(PORT, '127.0.0.1', () => {
-  console.log(`\n🚀 Tech Mentor Studio 已在本地启动: http://localhost:${PORT}`);
-  console.log(`📡 本地 AI 代理连接至: ${PROXY_URL}`);
+
+app.get('/api/health', (req, res) => res.json({ success: true, service: 'tech-mentor-studio' }));
+app.use((error, req, res, next) => {
+  if (res.headersSent) return next(error);
+  res.status(error.status || 500).json({ success: false, error: error.type === 'entity.parse.failed' ? '请求 JSON 格式无效' : error.type === 'entity.too.large' ? '请求超过大小限制' : '请求处理失败' });
 });
+return app;
+}
+
+if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
+  const port = Number(process.env.PORT || 3300);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('PORT 必须为 1 到 65535 的整数');
+  createApp().listen(port, '127.0.0.1', () => console.log(`Tech Mentor Studio: http://localhost:${port}`));
+}

@@ -100,3 +100,10 @@ test('out of order diff response cannot replace the current repository', async (
   pending[0](response('A.js')); await first;
   assert.equal(get('currentDiffFiles[0].path'), 'B.js');
 });
+
+test('diff renderer treats plus/minus prefixes inside hunks as code and numbers them', () => {
+  const { context } = loadClient(keeperResponse);
+  const html = context.renderFormattedDiff('diff --git a/a b/a\n--- a/a\n+++ b/a\n@@ -2 +3 @@\n---old\n+++new\n');
+  assert.match(html, /diff-line-del.*diff-num">2<.*---old/);
+  assert.match(html, /diff-line-add.*diff-num">3<.*\+\+\+new/);
+});
