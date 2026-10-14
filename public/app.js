@@ -16,6 +16,8 @@ let currentDiffAbortController = null;
 
 // P1: 多轮对话记忆栈 [{ role: 'user' | 'assistant', content: string }]
 let conversationHistory = [];
+let mentorSnapshotId = null;
+let mentorResolvedTarget = null;
 
 let localSessionPromise;
 async function apiFetch(url, options = {}) {
@@ -766,7 +768,8 @@ async function startMentorAnalysis(mode, customPrompt = '', resetSession = false
     customPrompt,
     focusFile: currentFocusFile,
     model: modelSelect.value,
-    history: conversationHistory
+    history: conversationHistory,
+    snapshotId: mentorSnapshotId
   };
 
   try {
@@ -777,7 +780,10 @@ async function startMentorAnalysis(mode, customPrompt = '', resetSession = false
       signal: controller.signal
     });
 
-    if (!response.ok) throw new Error(`服务响应异常: ${response.status}`);
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.error || `服务响应异常: ${response.status}`);
+    }
 
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
@@ -796,7 +802,10 @@ async function startMentorAnalysis(mode, customPrompt = '', resetSession = false
           try { event = JSON.parse(line.slice(5).trim()); }
           catch { throw new Error('服务器返回无效的流式数据'); }
           if (!isCurrent()) return;
-          if (event.type === 'status') {
+          if (event.type === 'snapshot') {
+            mentorSnapshotId = event.snapshotId;
+            mentorResolvedTarget = event.resolvedTarget;
+          } else if (event.type === 'status') {
             statusText.textContent = event.message;
           } else if (event.type === 'chunk' && !finalized) {
             currentTurnMarkdown += event.text;
@@ -811,6 +820,12 @@ async function startMentorAnalysis(mode, customPrompt = '', resetSession = false
             article.innerHTML = renderMarkdown(currentTurnMarkdown);
             await postProcessArticle(article);
             if (!isCurrent()) return;
+            if (mentorResolvedTarget) {
+              const evidenceNotice = document.createElement('p');
+              evidenceNotice.className = 'text-[10px] text-slate-500 mt-2';
+              evidenceNotice.textContent = `分析快照: ${mentorResolvedTarget === 'working-tree' ? '首次读取的工作区' : mentorResolvedTarget} · 追问保留首次证据`;
+              footerEl.appendChild(evidenceNotice);
+            }
             if (currentTurnUsage) {
               const numeric = key => Math.max(0, Number(currentTurnUsage[key]) || 0);
               const usage = document.createElement('div');
@@ -898,6 +913,8 @@ function clearMentorSession() {
   currentAbortController = null;
   document.getElementById('mentor-status-bar').classList.add('hidden');
   conversationHistory = [];
+  mentorSnapshotId = null;
+  mentorResolvedTarget = null;
   const chatStream = document.getElementById('mentor-chat-stream');
   chatStream.innerHTML = `
     <div id="mentor-empty-state" class="h-full flex flex-col items-center justify-center text-center p-8 text-slate-500">
@@ -921,7 +938,7 @@ async function copyMentorNotes() {
   }
 
   let fullMarkdown = `# 🧭 Tech Mentor 精读笔记: ${activeRepo ? activeRepo.name : ''}\n\n`;
-  fullMarkdown += `> 目标: ${activeTarget} | 时间: ${new Date().toLocaleString()}\n\n`;
+  fullMarkdown += `> 目标: ${mentorResolvedTarget || activeTarget} | 时间: ${new Date().toLocaleString()}\n\n`;
 
   conversationHistory.forEach((item, idx) => {
     if (item.role === 'user') {

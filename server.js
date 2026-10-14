@@ -1,7 +1,7 @@
 import { runGit, getStatus, getCommits, getPresets, loadDiff } from './lib/git.js';
-import { getCleanDiffForMentor } from './lib/diff.js';
-import { localAccess, RepositoryRegistry, readRepoText, httpError } from './lib/security.js';
-import { relayCompletion, requestLifecycle } from './lib/stream.js';
+import { hasProjectFacts } from './lib/facts.js';
+import { mentorHandler } from './lib/mentor.js';
+import { localAccess, RepositoryRegistry, httpError, redactKnownSecret } from './lib/security.js';
 import express from 'express';
 import { getKeeperStats } from './lib/keeper.js';
 import { getConfig } from './lib/config.js';
@@ -16,7 +16,6 @@ const __dirname = path.dirname(__filename);
 export function createApp(options = {}) {
 const app = express();
 const config = getConfig(options, __dirname);
-const PROXY_URL = config.proxyUrl;
 const PROXY_KEY = config.proxyKey;
 const fetchImpl = options.fetchImpl || fetch;
 
@@ -62,87 +61,6 @@ const DEFAULT_SCAN_ROOTS = options.scanRoots || (process.env.SCAN_ROOTS_JSON ? J
   path.join(os.homedir())
 ]);
 if (!Array.isArray(DEFAULT_SCAN_ROOTS) || !DEFAULT_SCAN_ROOTS.every(root => typeof root === 'string' && path.isAbsolute(root))) throw new Error('SCAN_ROOTS_JSON 必须是绝对路径数组');
-
-// ----------------- P0: 项目级事实源 (SSOT) 自动探针 (支持 Node/Python/Rust/Go) -----------------
-
-function getProjectFacts(repoPath) {
-  const candidateFiles = [
-    'CLAUDE.md',
-    'AGENTS.md',
-    'GEMINI.md',
-    'docs/STATE.md',
-    'docs/PROJECT.md',
-    'docs/ARCHITECTURE.md',
-    'docs/架构与平台参考.md',
-    'README.md'
-  ];
-
-  const facts = [];
-  for (const relPath of candidateFiles) {
-    const fullPath = path.join(repoPath, relPath);
-    if (fs.existsSync(fullPath)) {
-      try {
-        const stats = fs.statSync(fullPath);
-        if (stats.size > 0 && stats.size < 500000) {
-          const raw = readRepoText(repoPath, relPath);
-          // 取前 80 行，提炼核心架构规则
-          const lines = raw.split('\n').slice(0, 80).join('\n');
-          facts.push(`### [项目事实源与关键约束: ${relPath}]\n${lines.trim()}`);
-          if (facts.length >= 2) break; // 取前 2 个最重要的事实文件
-        }
-      } catch {}
-    }
-  }
-
-  // 1. Node.js (package.json)
-  const pkgPath = path.join(repoPath, 'package.json');
-  if (fs.existsSync(pkgPath)) {
-    try {
-      const pkg = JSON.parse(readRepoText(repoPath, 'package.json'));
-      const deps = Object.keys(pkg.dependencies || {}).slice(0, 10).join(', ');
-      facts.unshift(`【项目属性 (Node.js)】名称: ${pkg.name || path.basename(repoPath)} | 描述: ${pkg.description || '无'} | 核心依赖: ${deps || '原生标准库'}`);
-    } catch {}
-  }
-
-  // 2. Python (pyproject.toml / requirements.txt)
-  const pyprojectPath = path.join(repoPath, 'pyproject.toml');
-  const reqsPath = path.join(repoPath, 'requirements.txt');
-  if (fs.existsSync(pyprojectPath)) {
-    try {
-      const raw = readRepoText(repoPath, 'pyproject.toml');
-      const lines = raw.split('\n').slice(0, 30).join('\n');
-      facts.unshift(`【项目属性 (Python pyproject.toml)】\n${lines.trim()}`);
-    } catch {}
-  } else if (fs.existsSync(reqsPath)) {
-    try {
-      const raw = readRepoText(repoPath, 'requirements.txt');
-      const reqs = raw.split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('#')).slice(0, 10).join(', ');
-      facts.unshift(`【项目属性 (Python)】核心依赖: ${reqs}`);
-    } catch {}
-  }
-
-  // 3. Rust (Cargo.toml)
-  const cargoPath = path.join(repoPath, 'Cargo.toml');
-  if (fs.existsSync(cargoPath)) {
-    try {
-      const raw = readRepoText(repoPath, 'Cargo.toml');
-      const lines = raw.split('\n').slice(0, 25).join('\n');
-      facts.unshift(`【项目属性 (Rust Cargo)】\n${lines.trim()}`);
-    } catch {}
-  }
-
-  // 4. Go (go.mod)
-  const gomodPath = path.join(repoPath, 'go.mod');
-  if (fs.existsSync(gomodPath)) {
-    try {
-      const raw = readRepoText(repoPath, 'go.mod');
-      const lines = raw.split('\n').slice(0, 20).join('\n');
-      facts.unshift(`【项目属性 (Go module)】\n${lines.trim()}`);
-    } catch {}
-  }
-
-  return facts.join('\n\n');
-}
 
 // 扫描 Git 仓库
 let scanCache = null;
@@ -242,7 +160,7 @@ app.get('/api/repos/:repoId/diff', async (req, res) => {
   try {
     const repoPath = registry.resolve(req.params.repoId);
     const data = await loadDiff(repoPath, req.query.target || 'working-tree');
-    res.json({ ...data, repoPath, hasFacts: Boolean(getProjectFacts(repoPath)) });
+    res.json(redactKnownSecret({ ...data, repoPath, hasFacts: await hasProjectFacts(repoPath, data) }, config.proxyKey));
   } catch (error) { res.status(error.status || 500).json({ success: false, error: error.message }); }
 });
 
@@ -267,141 +185,7 @@ app.get('/api/models', async (req, res) => {
   }
 });
 
-// ----------------- P0 + P1: 导师带读核心 (多轮连贯记忆 + 项目事实源注入) -----------------
-app.post('/api/mentor/analyze', async (req, res) => {
-  const { 
-    repoPath, 
-    target, 
-    mode = 'walkthrough', 
-    customPrompt, 
-    focusFile = null,
-    model = 'claude-sonnet-4-6',
-    history = [] // P1: 多轮对话记忆上下文
-  } = req.body;
-
-  try { registry.resolvePath(repoPath); }
-  catch (err) { return res.status(err.status || 400).json({ error: err.message }); }
-
-  if (!PROXY_KEY) return res.status(503).json({ error: '尚未配置代理认证' });
-
-  res.writeHead(200, {
-    'Content-Type': 'text/event-stream',
-    'Cache-Control': 'no-cache',
-    'Connection': 'keep-alive'
-  });
-
-  const lifecycle = requestLifecycle(res, config.analysisTimeout);
-  const sendEvent = (data) => {
-    if (!res.destroyed && !res.writableEnded) res.write(`data: ${JSON.stringify(data)}\n\n`);
-  };
-
-  try {
-    sendEvent({ type: 'status', message: '正在加载项目事实源与 Git 差异...' });
-
-    let diff = await loadDiff(repoPath, target || 'working-tree', { signal: lifecycle.signal });
-    if (diff.isCleanWorkingTree && diff.fallbackHead) {
-      sendEvent({ type: 'status', message: `工作区干净，使用最新提交 ${diff.fallbackHead.shortHash}` });
-      diff = await loadDiff(repoPath, diff.fallbackHead.hash, { signal: lifecycle.signal });
-    }
-    const parsedFiles = diff.files;
-    const cleanDiff = getCleanDiffForMentor(parsedFiles, focusFile);
-    if (!cleanDiff.trim()) {
-      sendEvent({ type: 'error', message: '选中的目标没有可分析的文本代码，敏感文件和符号链接已排除' });
-      res.end(); return;
-    }
-    const commitInfo = diff.commitInfo;
-    const projectFacts = getProjectFacts(repoPath);
-    sendEvent({ type: 'status', message: '已提取代码差异和可用项目文档，正在分析...' });
-
-    // 3. 构建系统 Prompt 与项目约束
-    const systemInstruction = `你是一位世界级的系统架构师和技术领航导师（Tech Mentor）。
-用户当前由 AI 完成了代码开发，现在需要你帮助用户彻底吃透这次提交的代码实现与架构设计。
-
-【核心教学原则】
-1. 严禁空洞念代码（绝不做“第10行引入了库，第20行定义了变量”这种字面翻译）。
-2. 必须讲透【设计意图与权衡】（为什么这么改？受限条件是什么？为什么选择现在的方案而不是备选方案？）。
-3. 必须绘制直观的【Mermaid 架构流程图、时序图或状态流转图】。
-4. 必须萃取【核心 15~30 行灵魂代码】，带行号并做深度技术原理解剖（如特定系统调用、并发锁、协议解析等）。
-5. 必须揭露【隐藏的暗桩与防御性代码】（哪几行看似冗余的代码其实是在防范重大生产崩溃？）。
-6. 如果存在【项目事实源与关键约束】，你必须结合该项目的事实标准（如文件系统、跨平台、单一事实源等）给出最深刻的剖析。
-7. 最后给出 1~2 个【苏格拉底场景推演自测题】考查用户，促成认知内化。
-`;
-
-    // 4. 构建初始代码上下文消息
-    const contextPrompt = `项目路径: ${repoPath}
-${commitInfo}
-${focusFile ? `【聚焦单个文件】: ${focusFile}` : `【变动文件概览】: 包含 ${parsedFiles.length} 个文件`}
-
-${projectFacts ? `=== 项目全局事实源与架构规范 (PROJECT SSOT) ===\n${projectFacts}\n\n` : ''}
-=== 代码变动 (CLEAN DIFF) ===
-${cleanDiff}
-`;
-
-    // 5. 组织多轮对话消息栈 (P1 会话记忆支持)
-    const messages = [
-      { role: 'system', content: systemInstruction }
-    ];
-
-    if (history && history.length > 0) {
-      // 多轮追问模式：保留首轮上下文，并附带历史对话
-      messages.push({ role: 'user', content: contextPrompt });
-      for (const turn of history) {
-        messages.push({ role: turn.role, content: turn.content });
-      }
-      messages.push({ role: 'user', content: customPrompt });
-    } else {
-      // 首次带读模式
-      let initialInstruction = '';
-      if (mode === 'walkthrough') {
-        initialInstruction = '请对以上代码改动结合项目全局约束进行标准的【四阶架构全景带读】。';
-      } else if (mode === 'anatomy') {
-        initialInstruction = '请针对以上改动做显微镜级的【核心代码实相剖析】，抽出最灵魂的 15~30 行骨架逐段解构。';
-      } else if (mode === 'pitfalls') {
-        initialInstruction = '请专门排查以上改动中的【隐蔽暗桩与防御性设计 (Pitfalls & Gotchas)】，指出防御点与边界风险。';
-      } else if (mode === 'drill') {
-        initialInstruction = '请出 2 道具挑战性的【苏格拉底实战推演题】考查我，并在问题下方提供深入推演思路。';
-      } else if (mode === 'custom') {
-        initialInstruction = `用户提问: ${customPrompt}`;
-      }
-      messages.push({ role: 'user', content: `${contextPrompt}\n\n${initialInstruction}` });
-    }
-
-    // 6. 发起本地流式请求
-    const apiPayload = {
-      model,
-      stream: true,
-      stream_options: { include_usage: true },
-      messages
-    };
-
-    const response = await fetchImpl(PROXY_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${PROXY_KEY}`
-      },
-      body: JSON.stringify(apiPayload),
-      signal: lifecycle.signal
-    });
-
-    if (!response.ok) {
-      await response.body?.cancel();
-      sendEvent({ type: 'error', message: `API 请求失败 (${response.status})，请检查代理凭据和模型可用性` });
-      res.end();
-      return;
-    }
-
-    await relayCompletion(response, sendEvent, lifecycle.signal);
-    res.end();
-
-  } catch (err) {
-    sendEvent({ type: 'error', message: lifecycle.signal.aborted ? lifecycle.signal.reason.message : `分析失败: ${err.message}` });
-    res.end();
-  } finally {
-    lifecycle.dispose();
-  }
-});
-
+app.post('/api/mentor/analyze', mentorHandler({ registry, config, fetchImpl, snapshots: options.snapshots }));
 
 app.get('/api/health', (req, res) => res.json({ success: true, service: 'tech-mentor-studio' }));
 app.use((error, req, res, next) => {
