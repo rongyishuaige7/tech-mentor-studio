@@ -1,0 +1,266 @@
+
+> tech-mentor-studio@0.1.0 test
+> node --test test/*.test.js
+
+TAP version 13
+# Subtest: unborn repository combines staged and untracked final working contents
+ok 1 - unborn repository combines staged and untracked final working contents
+  ---
+  duration_ms: 166.701042
+  type: 'test'
+  ...
+# Subtest: untracked nested and special filenames retain exact names and line counts
+ok 2 - untracked nested and special filenames retain exact names and line counts
+  ---
+  duration_ms: 222.181583
+  type: 'test'
+  ...
+# Subtest: root commit and rename metadata are parsed correctly
+ok 3 - root commit and rename metadata are parsed correctly
+  ---
+  duration_ms: 621.180042
+  type: 'test'
+  ...
+# Subtest: range presets require an existing ancestor and branch refs may contain slash
+ok 4 - range presets require an existing ancestor and branch refs may contain slash
+  ---
+  duration_ms: 679.99525
+  type: 'test'
+  ...
+# Subtest: hunk content beginning with plus or minus is counted as code
+ok 5 - hunk content beginning with plus or minus is counted as code
+  ---
+  duration_ms: 0.543708
+  type: 'test'
+  ...
+# Subtest: new patches preserve empty files and final newline semantics
+ok 6 - new patches preserve empty files and final newline semantics
+  ---
+  duration_ms: 0.495791
+  type: 'test'
+  ...
+# Subtest: oversized first file retains code and later files with a truncation notice
+ok 7 - oversized first file retains code and later files with a truncation notice
+  ---
+  duration_ms: 0.4325
+  type: 'test'
+  ...
+# Subtest: sensitive files and links are excluded without claiming a clean tree
+ok 8 - sensitive files and links are excluded without claiming a clean tree
+  ---
+  duration_ms: 151.47225
+  type: 'test'
+  ...
+# Subtest: configured external diff is not invoked and partial stdout remains an error
+ok 9 - configured external diff is not invoked and partial stdout remains an error
+  ---
+  duration_ms: 256.834167
+  type: 'test'
+  ...
+# Subtest: status rename paths are NUL-safe
+ok 10 - status rename paths are NUL-safe
+  ---
+  duration_ms: 167.102417
+  type: 'test'
+  ...
+# Subtest: modified tracked symlinks remain excluded in worktree and historical diffs
+ok 11 - modified tracked symlinks remain excluded in worktree and historical diffs
+  ---
+  duration_ms: 297.384833
+  type: 'test'
+  ...
+# Subtest: HTTP selection supports unborn diff, registered IDs and JSON errors
+ok 12 - HTTP selection supports unborn diff, registered IDs and JSON errors
+  ---
+  duration_ms: 268.832042
+  type: 'test'
+  ...
+# Subtest: HTTP stream emits a single completion and forwards cancellation signal
+ok 13 - HTTP stream emits a single completion and forwards cancellation signal
+  ---
+  duration_ms: 905.902958
+  type: 'test'
+  ...
+# Subtest: closing the HTTP client aborts a pending upstream fetch
+ok 14 - closing the HTTP client aborts a pending upstream fetch
+  ---
+  duration_ms: 688.2985
+  type: 'test'
+  ...
+# Subtest: Keeper selects distinct latest windows, retains decimals and marks expired data unknown
+ok 15 - Keeper selects distinct latest windows, retains decimals and marks expired data unknown
+  ---
+  duration_ms: 98.381125
+  type: 'test'
+  ...
+# Subtest: model API distinguishes failure, missing configuration and empty results without fallback
+ok 16 - model API distinguishes failure, missing configuration and empty results without fallback
+  ---
+  duration_ms: 138.143583
+  type: 'test'
+  ...
+# Subtest: client visibly disables analysis on model failure and recovers on retry
+ok 17 - client visibly disables analysis on model failure and recovers on retry
+  ---
+  duration_ms: 3.789541
+  type: 'test'
+  ...
+# Subtest: CPA completion forwards usage and exactly one terminal event
+ok 18 - CPA completion forwards usage and exactly one terminal event
+  ---
+  duration_ms: 32.450375
+  type: 'test'
+  ...
+# Subtest: SSE accepts fragmented UTF-8 and multi-line data
+ok 19 - SSE accepts fragmented UTF-8 and multi-line data
+  ---
+  duration_ms: 1.158042
+  type: 'test'
+  ...
+# Subtest: incomplete upstream answer does not report success
+ok 20 - incomplete upstream answer does not report success
+  ---
+  duration_ms: 0.584292
+  type: 'test'
+  ...
+# Subtest: client disconnect aborts upstream lifecycle and removes its listener
+ok 21 - client disconnect aborts upstream lifecycle and removes its listener
+  ---
+  duration_ms: 0.377625
+  type: 'test'
+  ...
+# Subtest: both legacy terminal events store one answer and one set of follow-ups
+ok 22 - both legacy terminal events store one answer and one set of follow-ups
+  ---
+  duration_ms: 60.485
+  type: 'test'
+  ...
+# Subtest: error event terminates loading without saving a failed answer
+ok 23 - error event terminates loading without saving a failed answer
+  ---
+  duration_ms: 1.617375
+  type: 'test'
+  ...
+# Subtest: cleared session cannot be repopulated by an old response
+ok 24 - cleared session cannot be repopulated by an old response
+  ---
+  duration_ms: 8.524041
+  type: 'test'
+  ...
+# Subtest: old finally cannot erase the replacement request stop controller
+ok 25 - old finally cannot erase the replacement request stop controller
+  ---
+  duration_ms: 3.363458
+  type: 'test'
+  ...
+# Subtest: out of order diff response cannot replace the current repository
+ok 26 - out of order diff response cannot replace the current repository
+  ---
+  duration_ms: 2.040333
+  type: 'test'
+  ...
+# Subtest: diff renderer treats plus/minus prefixes inside hunks as code and numbers them
+ok 27 - diff renderer treats plus/minus prefixes inside hunks as code and numbers them
+  ---
+  duration_ms: 1.527667
+  type: 'test'
+  ...
+# Subtest: rapid chunks render once on completion without losing text
+ok 28 - rapid chunks render once on completion without losing text
+  ---
+  duration_ms: 1.685625
+  type: 'test'
+  ...
+# Subtest: empty and length-limited model replies cannot report success
+ok 29 - empty and length-limited model replies cannot report success
+  ---
+  duration_ms: 1.5695
+  type: 'test'
+  ...
+# Subtest: follow-ups retain the original worktree evidence after files change
+ok 30 - follow-ups retain the original worktree evidence after files change
+  ---
+  duration_ms: 522.64775
+  type: 'test'
+  ...
+# Subtest: historical evidence reads the selected revision and rejects symlink blobs
+ok 31 - historical evidence reads the selected revision and rejects symlink blobs
+  ---
+  duration_ms: 927.860708
+  type: 'test'
+  ...
+# Subtest: snapshot limits and whole-round history trimming are explicit
+ok 32 - snapshot limits and whole-round history trimming are explicit
+  ---
+  duration_ms: 1.428917
+  type: 'test'
+  ...
+# Subtest: clean worktree fallback reports the actual analyzed commit
+ok 33 - clean worktree fallback reports the actual analyzed commit
+  ---
+  duration_ms: 666.289375
+  type: 'test'
+  ...
+# Subtest: local access rejects hostile host, origin and fetch metadata
+ok 34 - local access rejects hostile host, origin and fetch metadata
+  ---
+  duration_ms: 1.150333
+  type: 'test'
+  ...
+# Subtest: API requires current in-memory local session token
+ok 35 - API requires current in-memory local session token
+  ---
+  duration_ms: 0.359041
+  type: 'test'
+  ...
+# Subtest: repository IDs cannot be forged from arbitrary directories
+ok 36 - repository IDs cannot be forged from arbitrary directories
+  ---
+  duration_ms: 80.497167
+  type: 'test'
+  ...
+# Subtest: file reads reject links, linked directories, traversal and sensitive names
+ok 37 - file reads reject links, linked directories, traversal and sensitive names
+  ---
+  duration_ms: 33.057167
+  type: 'test'
+  ...
+# Subtest: file reads enforce size and binary limits
+ok 38 - file reads enforce size and binary limits
+  ---
+  duration_ms: 50.590125
+  type: 'test'
+  ...
+# Subtest: configured local credentials are redacted from historical code evidence
+ok 39 - configured local credentials are redacted from historical code evidence
+  ---
+  duration_ms: 0.608542
+  type: 'test'
+  ...
+# Subtest: launcher refuses an unrelated listener and leaves it serving requests
+ok 40 - launcher refuses an unrelated listener and leaves it serving requests
+  ---
+  duration_ms: 237.737708
+  type: 'test'
+  ...
+# Subtest: launcher reuses a verified current project service
+ok 41 - launcher reuses a verified current project service
+  ---
+  duration_ms: 412.091667
+  type: 'test'
+  ...
+# Subtest: launcher refuses a previous backend version without stopping it
+ok 42 - launcher refuses a previous backend version without stopping it
+  ---
+  duration_ms: 321.423709
+  type: 'test'
+  ...
+1..42
+# tests 42
+# suites 0
+# pass 42
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 2639.427125

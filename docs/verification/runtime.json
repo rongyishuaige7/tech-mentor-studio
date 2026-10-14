@@ -1,0 +1,44 @@
+{
+  "observedAt": "2026-10-14T03:05:36.901Z",
+  "sourceCommit": "274fa8db50134dfc32f1b3c553ff3fa7b66fb1e3",
+  "url": "http://127.0.0.1:3300",
+  "scanRoots": [
+    "/Users/rongyi/Desktop/tech-mentor-studio"
+  ],
+  "checks": [
+    {
+      "endpoint": "/api/health",
+      "status": 200,
+      "success": true,
+      "fingerprintMatches": true
+    },
+    {
+      "endpoint": "/api/models",
+      "status": 200,
+      "success": true,
+      "modelCount": 27
+    },
+    {
+      "endpoint": "/api/tokens/keeper-stats",
+      "status": 200,
+      "success": true,
+      "windows": [
+        {
+          "label": "5h",
+          "state": "observed"
+        },
+        {
+          "label": "7d",
+          "state": "observed"
+        }
+      ]
+    },
+    {
+      "endpoint": "/api/repos",
+      "status": 200,
+      "success": true,
+      "repoCount": 1
+    }
+  ],
+  "modelInference": "fixture-only; no live inference request"
+}
