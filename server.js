@@ -3,8 +3,8 @@ import { getCleanDiffForMentor } from './lib/diff.js';
 import { localAccess, RepositoryRegistry, readRepoText, httpError } from './lib/security.js';
 import { relayCompletion, requestLifecycle } from './lib/stream.js';
 import express from 'express';
-import { exec } from 'child_process';
-import { promisify } from 'util';
+import { getKeeperStats } from './lib/keeper.js';
+import { getConfig } from './lib/config.js';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
@@ -12,13 +12,13 @@ import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const execAsync = promisify(exec);
 
 export function createApp(options = {}) {
 const app = express();
-const PROXY_URL = options.proxyUrl || process.env.PROXY_URL || 'http://127.0.0.1:8317/v1/chat/completions';
+const config = getConfig(options, __dirname);
+const PROXY_URL = config.proxyUrl;
+const PROXY_KEY = config.proxyKey;
 const fetchImpl = options.fetchImpl || fetch;
-const PROXY_KEY = options.proxyKey || process.env.PROXY_KEY || 'REDACTED-LOCAL-KEY';
 
 const access = localAccess();
 const registry = new RepositoryRegistry();
@@ -222,94 +222,9 @@ app.post('/api/repos/add', async (req, res) => {
   }
 });
 
-const KEEPER_DB_PATH = options.keeperPath || '/opt/homebrew/var/cpa-usage-keeper/app.db';
-
-async function getKeeperTokenStats() {
-  if (!fs.existsSync(KEEPER_DB_PATH)) return null;
-  try {
-    const todayPrefix = new Date().toISOString().slice(0, 10);
-    const tokensOut = await execAsync(`sqlite3 ${KEEPER_DB_PATH} "
-      SELECT COALESCE(ui.provider, 'other'), COALESCE(ui.name, 'unknown'), SUM(s.total_tokens), SUM(s.request_count)
-      FROM usage_overview_daily_stats s
-      LEFT JOIN usage_identities ui ON ui.identity = s.auth_index
-      WHERE s.bucket_start LIKE '${todayPrefix}%'
-      GROUP BY ui.provider;
-    "`);
-
-    const stats = {
-      today: todayPrefix,
-      antigravity: { tokens: 0, requests: 0 },
-      codex: { tokens: 0, requests: 0 },
-      claude: { tokens: 0, requests: 0 }
-    };
-
-    if (tokensOut.stdout) {
-      for (const line of tokensOut.stdout.trim().split('\n').filter(Boolean)) {
-        const [provider, name, totalTokens, reqCount] = line.split('|');
-        const p = (provider || '').toLowerCase();
-        const tCount = parseInt(totalTokens || '0', 10);
-        const rCount = parseInt(reqCount || '0', 10);
-        if (p.includes('antigravity') || p.includes('gemini')) {
-          stats.antigravity.tokens += tCount;
-          stats.antigravity.requests += rCount;
-        } else if (p.includes('codex') || p.includes('openai')) {
-          stats.codex.tokens += tCount;
-          stats.codex.requests += rCount;
-        } else if (p.includes('claude')) {
-          stats.claude.tokens += tCount;
-          stats.claude.requests += rCount;
-        }
-      }
-    }
-
-    const quotaOut = await execAsync(`sqlite3 ${KEEPER_DB_PATH} "
-      WITH latest_account AS (
-        SELECT qc.auth_index
-        FROM quota_cycles qc
-        JOIN quota_percent_segments qps ON qps.cycle_id = qc.id
-        WHERE qc.provider = 'codex'
-        ORDER BY qps.last_observed_at DESC, qps.id DESC
-        LIMIT 1
-      )
-      SELECT qc.quota_key, qc.window_seconds, qc.reset_at, qps.remaining_percent
-      FROM quota_cycles qc
-      JOIN quota_percent_segments qps ON qps.cycle_id = qc.id
-      JOIN latest_account la ON qc.auth_index = la.auth_index
-      WHERE qc.provider = 'codex'
-      ORDER BY qps.last_observed_at DESC, qps.id DESC
-      LIMIT 2;
-    "`);
-
-    const rateLimits = [];
-    if (quotaOut.stdout) {
-      const now = new Date();
-      for (const line of quotaOut.stdout.trim().split('\n').filter(Boolean)) {
-        const [key, windowSec, resetAtStr, remainingPercent] = line.split('|');
-        const resetAt = new Date(resetAtStr);
-        const isExpired = !isNaN(resetAt) && resetAt <= now;
-        const remaining = isExpired ? 100 : parseInt(remainingPercent || '0', 10);
-        const windowLabel = parseInt(windowSec, 10) <= 21600 ? '5h' : '7d';
-        rateLimits.push({
-          key,
-          label: windowLabel,
-          remainingPercent: remaining,
-          usedPercent: Math.max(0, 100 - remaining),
-          resetAt: resetAtStr,
-          isExpired
-        });
-      }
-    }
-
-    return { stats, rateLimits };
-  } catch (err) {
-    return null;
-  }
-}
-
 app.get('/api/tokens/keeper-stats', async (req, res) => {
-  const data = await getKeeperTokenStats();
-  if (!data) return res.json({ success: false, error: 'Keeper database unavailable' });
-  res.json({ success: true, ...data });
+  try { res.json({ success: true, ...await getKeeperStats(config.keeperPath) }); }
+  catch { res.status(503).json({ success: false, error: 'Keeper 计量不可用，请检查数据库路径和 SQLite' }); }
 });
 
 app.get('/api/repos/:repoId/commits', async (req, res) => {
@@ -332,34 +247,24 @@ app.get('/api/repos/:repoId/diff', async (req, res) => {
 });
 
 app.get('/api/models', async (req, res) => {
-  const defaultModels = [
-    { id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6 (深度思考带读 - 推荐)' },
-    { id: 'claude-sonnet-5-5-high', name: 'Claude Sonnet 5.5 High (高维架构解构)' },
-    { id: 'gemini-3.8-flash-high', name: 'Gemini 3.8 Flash High (AGY 极速免限额)' },
-    { id: 'gpt-6.1-sol', name: 'GPT-6.1 Sol (Codex Plus 旗舰推理)' },
-    { id: 'claude-opus-4-6-thinking', name: 'Claude Opus 4.6 (高维架构推演)' }
-  ];
-
+  if (!PROXY_KEY) return res.status(503).json({ success: false, models: [], error: '尚未配置代理认证，请设置 PROXY_KEY 或 data/proxy-key' });
   try {
-    const cpaRes = await fetchImpl('http://127.0.0.1:8317/v1/models', {
-      headers: { 'Authorization': `Bearer ${PROXY_KEY}` },
-      signal: AbortSignal.timeout(2000)
+    const response = await fetchImpl(config.modelsUrl, {
+      headers: { Authorization: `Bearer ${PROXY_KEY}` }, signal: AbortSignal.timeout(config.modelsTimeout)
     });
-    if (cpaRes.ok) {
-      const data = await cpaRes.json();
-      if (Array.isArray(data.data)) {
-        const availableIds = new Set(data.data.map(m => m.id));
-        const activeDefaults = defaultModels.filter(m => availableIds.has(m.id));
-        const otherModels = data.data
-          .filter(m => !defaultModels.some(dm => dm.id === m.id))
-          .map(m => ({ id: m.id, name: `${m.id} (${m.owned_by || 'CPA'})` }));
-
-        return res.json({ models: [...activeDefaults, ...otherModels] });
-      }
+    if (!response.ok) {
+      await response.body?.cancel();
+      return res.status(502).json({ success: false, models: [], error: [401, 403].includes(response.status)
+        ? '代理认证失败，请检查本地凭据' : `模型列表请求失败 (${response.status})` });
     }
-  } catch {}
-
-  res.json({ models: defaultModels });
+    const data = await response.json();
+    const models = Array.isArray(data.data) ? [...new Set(data.data.filter(m => typeof m?.id === 'string' && m.id.length > 0).map(m => m.id))]
+      .map(id => ({ id, name: id })) : [];
+    if (!models.length) return res.status(503).json({ success: false, models: [], error: '代理未返回可用模型，请检查代理服务后重试' });
+    res.json({ success: true, models });
+  } catch (error) {
+    res.status(502).json({ success: false, models: [], error: ['TimeoutError', 'AbortError'].includes(error.name) ? '模型列表查询超时' : '无法读取模型列表，请检查代理连接' });
+  }
 });
 
 // ----------------- P0 + P1: 导师带读核心 (多轮连贯记忆 + 项目事实源注入) -----------------
@@ -377,13 +282,15 @@ app.post('/api/mentor/analyze', async (req, res) => {
   try { registry.resolvePath(repoPath); }
   catch (err) { return res.status(err.status || 400).json({ error: err.message }); }
 
+  if (!PROXY_KEY) return res.status(503).json({ error: '尚未配置代理认证' });
+
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache',
     'Connection': 'keep-alive'
   });
 
-  const lifecycle = requestLifecycle(res, 180000);
+  const lifecycle = requestLifecycle(res, config.analysisTimeout);
   const sendEvent = (data) => {
     if (!res.destroyed && !res.writableEnded) res.write(`data: ${JSON.stringify(data)}\n\n`);
   };

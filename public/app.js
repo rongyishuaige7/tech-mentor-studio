@@ -1,4 +1,5 @@
 // Tech Mentor Studio Client Application (P0/P1 Multi-turn & Smart Diff Filter)
+let modelsReady = false;
 let allRepos = [];
 let activeRepo = null;
 let activeTarget = 'working-tree'; // 'working-tree' 或 commit hash
@@ -61,19 +62,37 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 // 动态同步 CPA 活跃模型清单
+function updateAnalysisAvailability() {
+  for (const id of ['btn-walkthrough', 'btn-anatomy', 'btn-pitfalls', 'btn-drill', 'btn-submit-prompt']) {
+    const button = document.getElementById(id);
+    if (button) button.disabled = !modelsReady;
+  }
+}
+
 async function loadModels() {
   const select = document.getElementById('model-select');
+  const status = document.getElementById('model-status');
   if (!select) return;
+  modelsReady = false;
+  select.disabled = true;
+  updateAnalysisAvailability();
+  if (status) status.textContent = '正在查询模型…';
   try {
     const res = await apiFetch('/api/models');
     const data = await res.json();
-    if (data.models && Array.isArray(data.models) && data.models.length > 0) {
-      const currentVal = select.value;
-      select.innerHTML = data.models.map(m => `
-        <option value="${escapeHtml(m.id)}" ${m.id === currentVal ? 'selected' : ''}>${escapeHtml(m.name)}</option>
-      `).join('');
-    }
-  } catch {}
+    if (!res.ok || !data.success || !Array.isArray(data.models) || !data.models.length) throw new Error(data.error || '没有可用模型');
+    const preferred = select.value || localStorage.getItem('mentor-model');
+    select.innerHTML = data.models.map(m => `<option value="${escapeHtml(m.id)}">${escapeHtml(m.name)}</option>`).join('');
+    if (data.models.some(m => m.id === preferred)) select.value = preferred;
+    modelsReady = true;
+    if (status) status.textContent = `${data.models.length} 个可用模型`;
+  } catch (error) {
+    if (status) status.textContent = error.message;
+    select.innerHTML = '<option value="">模型不可用</option>';
+  } finally {
+    select.disabled = !modelsReady;
+    updateAnalysisAvailability();
+  }
 }
 
 // 0. 加载 CPA / Keeper 实时统计与配额
@@ -87,12 +106,13 @@ async function loadKeeperStats() {
     const res = await apiFetch('/api/tokens/keeper-stats');
     const data = await res.json();
     if (!data.success) {
-      textEl.textContent = 'CPA 8317 就绪';
+      textEl.textContent = '计量不可用';
+      if (popoverContent) popoverContent.textContent = 'Keeper 计量不可用，请检查数据库路径和 SQLite';
       return;
     }
 
     const { stats, rateLimits } = data;
-    if (todayDateEl) todayDateEl.textContent = stats.today || '';
+    if (todayDateEl) todayDateEl.textContent = `${stats.today || ''} UTC`;
 
     const formatK = (num) => {
       if (!num) return '0';
@@ -113,23 +133,23 @@ async function loadKeeperStats() {
     if (primaryLimit) {
       const remaining = primaryLimit.remainingPercent;
       const color = remaining > 30 ? 'text-emerald-400' : (remaining > 10 ? 'text-amber-400' : 'text-rose-400');
-      parts.push(`<span class="${color}">5h: ${remaining}%</span>`);
+      parts.push(`<span class="${color}">5h: ${remaining === null ? '等待更新' : `${remaining}%`}</span>`);
     }
 
-    textEl.innerHTML = parts.length > 0 ? parts.join(' · ') : 'CPA 8317 就绪';
+    textEl.innerHTML = parts.length > 0 ? parts.join(' · ') : '暂无今日计量';
 
     if (popoverContent) {
       let limitsHtml = (rateLimits || []).map(r => `
         <div class="space-y-1 bg-slate-950/60 p-2 rounded border border-slate-800">
           <div class="flex justify-between items-center text-[11px]">
-            <span class="font-medium text-slate-300">Codex ${r.label} 速率窗口</span>
-            <span class="font-mono ${r.remainingPercent > 30 ? 'text-emerald-400' : 'text-amber-400'}">剩余 ${r.remainingPercent}%</span>
+            <span class="font-medium text-slate-300">Codex ${escapeHtml(r.label)} 速率窗口</span>
+            <span class="font-mono ${r.remainingPercent > 30 ? 'text-emerald-400' : 'text-amber-400'}">${r.remainingPercent === null ? '等待更新 / 未知' : `剩余 ${r.remainingPercent}%`}</span>
           </div>
           <div class="w-full bg-slate-800 h-1.5 rounded-full overflow-hidden">
-            <div class="h-full rounded-full ${r.remainingPercent > 30 ? 'bg-emerald-500' : 'bg-amber-500'}" style="width: ${r.remainingPercent}%"></div>
+            <div class="h-full rounded-full ${r.remainingPercent > 30 ? 'bg-emerald-500' : 'bg-amber-500'}" style="width: ${Number(r.remainingPercent) || 0}%"></div>
           </div>
           <div class="text-[10px] text-slate-500 flex justify-between">
-            <span>重置时间: ${r.resetAt ? new Date(r.resetAt).toLocaleTimeString() : '已重置'}</span>
+            <span>重置时间: ${r.resetAt ? new Date(r.resetAt).toLocaleString() : '未知'}</span>
           </div>
         </div>
       `).join('');
@@ -152,7 +172,8 @@ async function loadKeeperStats() {
       popoverContent.innerHTML = statsHtml + limitsHtml;
     }
   } catch (err) {
-    textEl.textContent = 'CPA 8317 就绪';
+    textEl.textContent = '计量不可用';
+      if (popoverContent) popoverContent.textContent = 'Keeper 计量不可用，请检查数据库路径和 SQLite';
   }
 }
 
@@ -189,6 +210,8 @@ function setupEventListeners() {
     }
   });
   document.getElementById('btn-refresh').addEventListener('click', loadRepos);
+  document.getElementById('btn-retry-models').addEventListener('click', loadModels);
+  document.getElementById('model-select').addEventListener('change', event => localStorage.setItem('mentor-model', event.target.value));
   document.getElementById('repo-search').addEventListener('input', handleRepoFilter);
   document.getElementById('btn-add-repo').addEventListener('click', handleAddRepo);
 
@@ -658,6 +681,7 @@ async function copyCurrentDiff() {
 
 // 4. 触发 Tech Mentor 深度分析 (P1 多轮记忆流式支持)
 async function startMentorAnalysis(mode, customPrompt = '', resetSession = false) {
+  if (!modelsReady) { alert('模型尚未就绪，请重试模型连接'); return; }
   if (!activeRepo) {
     alert('请先在左侧选择一个仓库项目！');
     return;

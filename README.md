@@ -35,3 +35,18 @@
 npm start
 ```
 服务将在本地启动并自动打开浏览器：`http://localhost:3300`。
+
+## 本地代理配置
+
+需要 Node.js 22+。认证从 `PROXY_KEY` 环境变量或未提交的 `data/proxy-key` 读取；本地文件应使用权限 600，缺少认证时界面明确提示配置失败。不要把真实凭据提交到 Git。
+
+| 配置 | 默认值 | 用途 |
+| --- | --- | --- |
+| `PROXY_URL` | `http://127.0.0.1:8317/v1/chat/completions` | 分析接口 |
+| `MODELS_URL` | 由分析地址推导 `/v1/models` | 模型列表 |
+| `KEEPER_DB_PATH` | `/opt/homebrew/var/cpa-usage-keeper/app.db` | SQLite 只读计量 |
+| `MODELS_TIMEOUT_MS` | 5000 | 模型列表超时 |
+| `ANALYSIS_TIMEOUT_MS` | 180000 | 分析总超时 |
+| `SCAN_ROOTS_JSON` | 本地常用开发目录 | 绝对路径数组 |
+
+Keeper 每个窗口显示最新观测值，过期后显示等待更新；今日统计使用 UTC 日期。计量不可用不代表代理可用，模型连接状态单独显示。

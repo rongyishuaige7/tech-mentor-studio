@@ -30,11 +30,11 @@ export function loadClient(fetcher) {
       : fetcher(url, options), AbortController, TextDecoder, console,
     DOMPurify: { sanitize: x => x },
     marked: { parse: x => x }, lucide: { createIcons() {} }, hljs: {},
-    setTimeout, clearTimeout, alert() {}, navigator: {}
+    localStorage: { getItem() { return null; }, setItem() {} }, setTimeout, clearTimeout, alert() {}, navigator: {}
   });
   context.window = context;
   vm.runInContext(fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8'), context);
-  vm.runInContext("activeRepo = { id: 'B', name: 'B', path: '/repo/B' }; activeTarget = 'HEAD';", context);
+  vm.runInContext("modelsReady = true; activeRepo = { id: 'B', name: 'B', path: '/repo/B' }; activeTarget = 'HEAD';", context);
   return { context, nodes, get: expression => vm.runInContext(expression, context) };
 }
 
