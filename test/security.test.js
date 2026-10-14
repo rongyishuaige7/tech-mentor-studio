@@ -69,3 +69,12 @@ test('file reads enforce size and binary limits', t => {
   assert.throws(() => readRepoText(repo, 'binary'), /二进制/);
   assert.throws(() => readRepoText(repo, 'large', 50), /上限/);
 });
+
+test('configured local credentials are redacted from historical code evidence', async () => {
+  const { redactKnownSecret, isSensitiveFile } = await import('../lib/security.js');
+  const secret = 'fixture-secret-only';
+  assert.equal(isSensitiveFile('data/proxy-key'), true);
+  const result = redactKnownSecret({ files: [{ patch: `+const key = '${secret}'` }], diffText: secret }, secret);
+  assert.equal(JSON.stringify(result).includes(secret), false);
+  assert.equal(result.diffText, '[REDACTED]');
+});

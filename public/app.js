@@ -4,6 +4,11 @@ let allRepos = [];
 let activeRepo = null;
 let activeTarget = 'working-tree'; // 'working-tree' 或 commit hash
 let currentDiffFiles = [];
+let currentCommits = [];
+let currentPresets = [];
+let diffPage = 0;
+let reposLoadSequence = 0;
+let modelsLoadSequence = 0;
 let currentDiffWarnings = [];
 let currentFocusFile = null; // null 表示全部文件
 let currentAbortController = null;
@@ -72,6 +77,7 @@ function updateAnalysisAvailability() {
 }
 
 async function loadModels() {
+  const sequence = ++modelsLoadSequence;
   const select = document.getElementById('model-select');
   const status = document.getElementById('model-status');
   if (!select) return;
@@ -82,16 +88,21 @@ async function loadModels() {
   try {
     const res = await apiFetch('/api/models');
     const data = await res.json();
+    if (sequence !== modelsLoadSequence) return;
     if (!res.ok || !data.success || !Array.isArray(data.models) || !data.models.length) throw new Error(data.error || '没有可用模型');
-    const preferred = select.value || localStorage.getItem('mentor-model');
+    let preferred = select.value;
+    try { preferred ||= localStorage.getItem('mentor-model'); } catch {}
     select.innerHTML = data.models.map(m => `<option value="${escapeHtml(m.id)}">${escapeHtml(m.name)}</option>`).join('');
+    if (!preferred) preferred = ['claude-sonnet-4-6', 'gpt-6.1-sol'].find(id => data.models.some(m => m.id === id));
     if (data.models.some(m => m.id === preferred)) select.value = preferred;
     modelsReady = true;
     if (status) status.textContent = `${data.models.length} 个可用模型`;
   } catch (error) {
+    if (sequence !== modelsLoadSequence) return;
     if (status) status.textContent = error.message;
     select.innerHTML = '<option value="">模型不可用</option>';
   } finally {
+    if (sequence !== modelsLoadSequence) return;
     select.disabled = !modelsReady;
     updateAnalysisAvailability();
   }
@@ -209,11 +220,13 @@ function setupEventListeners() {
       case 'focus': window.setFocusFile(value); break;
       case 'focus-all': window.setFocusFile(null); break;
       case 'ask': window.quickAsk(value); break;
+      case 'diff-page': diffPage = Number(value); renderActiveDiff(false); break;
+      case 'panel': showPanel(value); break;
     }
   });
-  document.getElementById('btn-refresh').addEventListener('click', loadRepos);
+  document.getElementById('btn-refresh').addEventListener('click', () => loadRepos(true));
   document.getElementById('btn-retry-models').addEventListener('click', loadModels);
-  document.getElementById('model-select').addEventListener('change', event => localStorage.setItem('mentor-model', event.target.value));
+  document.getElementById('model-select').addEventListener('change', event => { try { localStorage.setItem('mentor-model', event.target.value); } catch {} });
   document.getElementById('repo-search').addEventListener('input', handleRepoFilter);
   document.getElementById('btn-add-repo').addEventListener('click', handleAddRepo);
 
@@ -271,24 +284,31 @@ function setupEventListeners() {
 }
 
 // 1. 加载仓库列表
-async function loadRepos() {
+async function loadRepos(refresh = false) {
+  const sequence = ++reposLoadSequence;
+  const refreshButton = document.getElementById('btn-refresh');
+  refreshButton.disabled = true;
   const listEl = document.getElementById('repo-list');
   listEl.innerHTML = '<div class="text-xs text-slate-500 text-center py-8">正在扫描本地 Git 仓库...</div>';
 
   try {
-    const res = await apiFetch('/api/repos');
+    const res = await apiFetch(`/api/repos${refresh ? '?refresh=1' : ''}`);
     const data = await res.json();
     if (!data.success) throw new Error(data.error);
 
+    if (sequence !== reposLoadSequence) return;
     allRepos = data.repos;
+    if (activeRepo) activeRepo = allRepos.find(repo => repo.id === activeRepo.id) || activeRepo;
     document.getElementById('repo-count').textContent = allRepos.length;
-    renderRepoList(allRepos);
+    handleRepoFilter({ target: document.getElementById('repo-search') });
 
     if (allRepos.length > 0 && !activeRepo) {
       selectRepo(allRepos[0]);
     }
   } catch (err) {
-    listEl.innerHTML = `<div class="text-xs text-rose-400 text-center py-6">加载仓库失败: ${escapeHtml(err.message)}</div>`;
+    if (sequence === reposLoadSequence) listEl.innerHTML = `<div class="text-xs text-rose-400 text-center py-6">加载仓库失败: ${escapeHtml(err.message)}</div>`;
+  } finally {
+    if (sequence === reposLoadSequence) refreshButton.disabled = false;
   }
 }
 
@@ -311,15 +331,16 @@ function renderRepoList(repos) {
                : 'bg-slate-900/40 border-slate-800/40 hover:bg-slate-800/60 text-slate-300'
            }">
         <div class="flex items-center justify-between">
-          <span class="font-medium text-xs truncate flex items-center gap-1.5">
+          <span class="repo-name font-medium text-xs truncate flex items-center gap-1.5">
             <i data-lucide="folder-git-2" class="w-3.5 h-3.5 ${isSelected ? 'text-indigo-400' : 'text-slate-500'}"></i>
-            ${escapeHtml(repo.name)}
+            <span class="truncate">${escapeHtml(repo.name)}</span>
           </span>
           ${hasDirty 
-            ? `<span class="text-[10px] px-1.5 py-0.2 rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/30 font-mono font-medium">⚡ ${repo.dirtyCount} 变动</span>` 
+            ? `<span class="text-[10px] px-1.5 py-0.2 rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/30 font-mono font-medium shrink-0">⚡ ${repo.dirtyCount} 变动</span>`
             : `<span class="text-[10px] text-slate-500 font-mono">${escapeHtml(repo.branch)}</span>`
           }
         </div>
+        ${repo.error ? `<div class="text-[11px] text-rose-400">读取失败: ${escapeHtml(repo.error)}</div>` : ''}
         ${repo.lastCommit ? `
           <div class="text-[11px] text-slate-400 truncate mt-0.5">
             ${escapeHtml(repo.lastCommit.msg)}
@@ -371,6 +392,9 @@ async function handleAddRepo() {
 
 // 2. 选择仓库并加载提交记录
 async function selectRepo(repo) {
+  showPanel('diff');
+  currentCommits = [];
+  currentPresets = [];
   const sequence = ++repoRequestSequence;
   currentRepoAbortController?.abort();
   const controller = new AbortController();
@@ -382,7 +406,7 @@ async function selectRepo(repo) {
   activeRepo = repo;
   currentFocusFile = null;
   clearMentorSession();
-  renderRepoList(allRepos);
+  handleRepoFilter({ target: document.getElementById('repo-search') });
 
   document.getElementById('active-repo-name').textContent = repo.name;
   document.getElementById('active-repo-path').textContent = repo.path;
@@ -399,8 +423,10 @@ async function selectRepo(repo) {
     if (!data.success) throw new Error(data.error);
 
     if (sequence !== repoRequestSequence || activeRepo?.id !== repo.id) return;
-    renderCommitPresets(data.presets || []);
-    renderCommitList(data.commits);
+    currentPresets = data.presets || [];
+    currentCommits = data.commits;
+    renderCommitPresets(currentPresets);
+    renderCommitList(currentCommits);
 
     if (data.commits.length > 0) {
       if (data.dirtyCount === 0) {
@@ -409,6 +435,8 @@ async function selectRepo(repo) {
       } else {
         selectTarget(data.commits[0].hash);
       }
+    } else {
+      selectTarget('working-tree');
     }
   } catch (err) {
     if (sequence !== repoRequestSequence || err.name === 'AbortError') return;
@@ -455,6 +483,8 @@ function renderCommitList(commits) {
 
 window.selectTarget = (targetHash) => {
   activeTarget = targetHash;
+  renderCommitPresets(currentPresets);
+  renderCommitList(currentCommits);
   currentFocusFile = null;
   clearMentorSession();
   if (activeRepo) {
@@ -598,57 +628,52 @@ window.setFocusFile = (filePath) => {
   renderActiveDiff();
 };
 
-function renderActiveDiff() {
-  const diffEl = document.getElementById('diff-content');
-  if (!currentDiffFiles || currentDiffFiles.length === 0) {
-    diffEl.innerHTML = '<span class="text-slate-500">// 无差异内容</span>';
-    return;
-  }
-
-  let textToRender = '';
-  if (currentFocusFile) {
-    const file = currentDiffFiles.find(f => f.path === currentFocusFile);
-    textToRender = file ? file.patch : '// 未找到选中文件的 Diff';
-  } else {
-    textToRender = currentDiffFiles.map(f => f.patch).join('\n\n');
-  }
-
-  const warnings = currentDiffWarnings.length ? `<div class="p-2 text-amber-300 text-xs">${currentDiffWarnings.map(escapeHtml).join('<br>')}</div>` : '';
-  diffEl.innerHTML = warnings + renderFormattedDiff(textToRender);
+function showPanel(panel) {
+  const main = document.getElementById('workspace');
+  if (!main || !['repos', 'diff', 'mentor'].includes(panel)) return;
+  main.dataset.panel = panel;
+  for (const button of document.querySelectorAll('[data-action="panel"]')) button.setAttribute('aria-pressed', String(button.dataset.value === panel));
 }
 
-// 增强格式化 Diff：支持行号与清晰 Gutter
-function renderFormattedDiff(rawDiff) {
-  if (!rawDiff || rawDiff.trim() === '') return '<span class="text-slate-500">// 无差异内容</span>';
+function renderActiveDiff(resetPage = true) {
+  if (resetPage) diffPage = 0;
+  const diffEl = document.getElementById('diff-content');
+  if (!currentDiffFiles.length) { diffEl.innerHTML = '<span class="text-slate-500">// 无差异内容</span>'; return; }
+  const text = currentFocusFile ? currentDiffFiles.find(file => file.path === currentFocusFile)?.patch || '' : currentDiffFiles.map(file => file.patch).join('\n\n');
+  const total = text.split('\n').length;
+  const perPage = 2000, pages = Math.ceil(total / perPage);
+  diffPage = Math.max(0, Math.min(pages - 1, diffPage));
+  const warnings = currentDiffWarnings.length ? `<div class="p-2 text-amber-300 text-xs">${currentDiffWarnings.map(escapeHtml).join('<br>')}</div>` : '';
+  const navigation = pages > 1 ? `<div class="diff-pagination">
+    <span>第 ${diffPage + 1} / ${pages} 页 · 共 ${total} 行 · 复制保留完整 Diff</span>
+    <button data-action="diff-page" data-value="${diffPage - 1}" ${diffPage === 0 ? 'disabled' : ''}>上一页</button>
+    <button data-action="diff-page" data-value="${diffPage + 1}" ${diffPage === pages - 1 ? 'disabled' : ''}>下一页</button>
+  </div>` : '';
+  diffEl.innerHTML = warnings + navigation + renderFormattedDiff(text, diffPage * perPage, perPage);
+}
+
+function renderFormattedDiff(rawDiff, start = 0, count = Infinity) {
+  if (!rawDiff?.trim()) return '<span class="text-slate-500">// 无差异内容</span>';
   let oldLine = 0, newLine = 0, oldRemaining = 0, newRemaining = 0;
-  return rawDiff.split('\n').map(line => {
-    const escaped = escapeHtml(line);
+  const lines = rawDiff.split('\n'), output = [];
+  for (let i = 0; i < Math.min(lines.length, start + count); i++) {
+    const line = lines[i];
+    let rowClass = 'text-slate-500', number = '···';
     const hunk = line.match(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/);
     if (hunk) {
       oldLine = Number(hunk[1]); newLine = Number(hunk[3]);
       oldRemaining = Number(hunk[2] ?? 1); newRemaining = Number(hunk[4] ?? 1);
-      return `<div class="diff-line diff-line-hunk"><span class="diff-num">@@</span><span class="diff-text">${escaped}</span></div>`;
+      rowClass = 'diff-line-hunk'; number = '@@';
+    } else if (line.startsWith('diff --git ')) {
+      oldRemaining = newRemaining = 0; rowClass = 'text-indigo-400 font-bold mt-3 mb-1';
+    } else if (oldRemaining || newRemaining) {
+      if (line.startsWith('+')) { newRemaining--; rowClass = 'diff-line-add'; number = newLine++; }
+      else if (line.startsWith('-')) { oldRemaining--; rowClass = 'diff-line-del'; number = oldLine++; }
+      else if (line.startsWith(' ')) { oldRemaining--; newRemaining--; oldLine++; rowClass = ''; number = newLine++; }
     }
-    if (oldRemaining || newRemaining) {
-      if (line.startsWith('+')) {
-        newRemaining--;
-        return `<div class="diff-line diff-line-add"><span class="diff-num">${newLine++}</span><span class="diff-text">${escaped}</span></div>`;
-      }
-      if (line.startsWith('-')) {
-        oldRemaining--;
-        return `<div class="diff-line diff-line-del"><span class="diff-num">${oldLine++}</span><span class="diff-text">${escaped}</span></div>`;
-      }
-      if (line.startsWith(' ')) {
-        oldRemaining--; newRemaining--; oldLine++;
-        return `<div class="diff-line"><span class="diff-num">${newLine++}</span><span class="diff-text">${escaped}</span></div>`;
-      }
-    }
-    if (line.startsWith('diff --git ')) {
-      oldRemaining = 0; newRemaining = 0;
-      return `<div class="diff-line text-indigo-400 font-bold mt-3 mb-1"><span class="diff-text">${escaped}</span></div>`;
-    }
-    return `<div class="diff-line text-slate-500"><span class="diff-num">···</span><span class="diff-text">${escaped}</span></div>`;
-  }).join('');
+    if (i >= start) output.push(`<div class="diff-line ${rowClass}"><span class="diff-num">${number}</span><span class="diff-text">${escapeHtml(line)}</span></div>`);
+  }
+  return output.join('');
 }
 
 async function copyCurrentDiff() {
@@ -689,6 +714,7 @@ async function startMentorAnalysis(mode, customPrompt = '', resetSession = false
     return;
   }
 
+  showPanel('mentor');
   if (resetSession) {
     clearMentorSession();
   }
@@ -760,6 +786,14 @@ async function startMentorAnalysis(mode, customPrompt = '', resetSession = false
   let currentTurnMarkdown = '';
   let currentTurnUsage = null;
   let finalized = false;
+  let renderTimer = null;
+  const flushArticle = () => {
+    clearTimeout(renderTimer); renderTimer = null;
+    if (!ownsRequest()) return;
+    const atBottom = chatStream.scrollHeight - chatStream.scrollTop - chatStream.clientHeight < 100;
+    article.innerHTML = renderMarkdown(currentTurnMarkdown);
+    if (atBottom) chatStream.scrollTop = chatStream.scrollHeight;
+  };
 
   const payload = {
     repoPath: activeRepo.path,
@@ -809,15 +843,14 @@ async function startMentorAnalysis(mode, customPrompt = '', resetSession = false
             statusText.textContent = event.message;
           } else if (event.type === 'chunk' && !finalized) {
             currentTurnMarkdown += event.text;
-            article.innerHTML = renderMarkdown(currentTurnMarkdown);
-            chatStream.scrollTop = chatStream.scrollHeight;
+            renderTimer ||= setTimeout(flushArticle, 80);
           } else if (event.type === 'usage') {
             currentTurnUsage = event.usage;
           } else if (event.type === 'error') {
             throw new Error(event.message || '分析失败');
           } else if ((event.type === 'finished' || event.type === 'done') && !finalized) {
             finalized = true;
-            article.innerHTML = renderMarkdown(currentTurnMarkdown);
+            flushArticle();
             await postProcessArticle(article);
             if (!isCurrent()) return;
             if (mentorResolvedTarget) {
@@ -848,6 +881,8 @@ async function startMentorAnalysis(mode, customPrompt = '', resetSession = false
     }
   } catch (err) {
     if (!ownsRequest()) return;
+    flushArticle();
+    if (!currentTurnMarkdown) article.innerHTML = '';
     if (controller.signal.aborted) {
       const notice = document.createElement('p');
       notice.className = 'text-slate-500 text-xs mt-2';
@@ -860,6 +895,7 @@ async function startMentorAnalysis(mode, customPrompt = '', resetSession = false
       article.appendChild(notice);
     }
   } finally {
+    clearTimeout(renderTimer);
     if (currentAbortController === controller) {
       currentAbortController = null;
       statusBar.classList.add('hidden');
@@ -969,11 +1005,11 @@ function exportMentorMarkdown() {
     return;
   }
   const repoName = activeRepo ? activeRepo.name : 'repo';
-  const targetTag = activeTarget.replace(/[^a-zA-Z0-9_\-\.]/g, '_');
+  const targetTag = (mentorResolvedTarget || activeTarget).replace(/[^a-zA-Z0-9_\-\.]/g, '_');
   const fileName = `tech-mentor-${repoName}-${targetTag}.md`;
 
   let fullMarkdown = `# 🧭 Tech Mentor 深度精读笔记: ${repoName}\n\n`;
-  fullMarkdown += `> **代码目标**: \`${activeTarget}\` | **导出时间**: ${new Date().toLocaleString()} | **仓库路径**: \`${activeRepo?.path || ''}\`\n\n`;
+  fullMarkdown += `> **代码目标**: \`${mentorResolvedTarget || activeTarget}\` | **导出时间**: ${new Date().toLocaleString()} | **仓库路径**: \`${activeRepo?.path || ''}\`\n\n`;
   fullMarkdown += `---\n\n`;
 
   conversationHistory.forEach((item, idx) => {

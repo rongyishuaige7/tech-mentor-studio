@@ -8,7 +8,7 @@ export function loadClient(fetcher) {
       id, innerHTML: '', textContent: '', value: 'audit-model',
       options: [{ text: 'Audit Model' }], selectedIndex: 0,
       children: [], scrollTop: 0, scrollHeight: 0,
-      classList: {
+      dataset: {}, classList: {
         values: new Set(['hidden']),
         add(x) { this.values.add(x); }, remove(x) { this.values.delete(x); },
         contains(x) { return this.values.has(x); }
@@ -18,7 +18,7 @@ export function loadClient(fetcher) {
     };
   }
   const document = {
-    addEventListener() {}, createElement() { return node(); },
+    addEventListener() {}, querySelectorAll() { return []; }, createElement() { return node(); },
     getElementById(id) {
       if (!nodes.has(id)) nodes.set(id, node(id));
       return nodes.get(id);

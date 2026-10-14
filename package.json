@@ -5,11 +5,10 @@
   "main": "server.js",
   "type": "module",
   "scripts": {
-    "start": "node server.js",
+    "start": "node scripts/start.js",
     "test": "node --test test/*.test.js",
-    "check": "node --check server.js && node --check public/app.js && bash -n start.sh",
+    "check": "node scripts/check.js",
     "build": "node scripts/build-assets.js",
-    "prestart": "npm run build",
     "test:browser": "playwright test"
   },
   "dependencies": {

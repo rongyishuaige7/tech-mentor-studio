@@ -5,6 +5,8 @@ import { localAccess, RepositoryRegistry, httpError, redactKnownSecret } from '.
 import express from 'express';
 import { getKeeperStats } from './lib/keeper.js';
 import { getConfig } from './lib/config.js';
+import { buildFingerprint } from './lib/runtime.js';
+import { requestLifecycle } from './lib/stream.js';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
@@ -16,6 +18,7 @@ const __dirname = path.dirname(__filename);
 export function createApp(options = {}) {
 const app = express();
 const config = getConfig(options, __dirname);
+const fingerprint = buildFingerprint(__dirname);
 const PROXY_KEY = config.proxyKey;
 const fetchImpl = options.fetchImpl || fetch;
 
@@ -146,22 +149,28 @@ app.get('/api/tokens/keeper-stats', async (req, res) => {
 });
 
 app.get('/api/repos/:repoId/commits', async (req, res) => {
+  const lifecycle = requestLifecycle(res, 45000);
   try {
     const repoPath = registry.resolve(req.params.repoId);
-    const [status, commits, presets] = await Promise.all([getStatus(repoPath), getCommits(repoPath), getPresets(repoPath)]);
+    const options = { signal: lifecycle.signal };
+    const [status, commits, presets] = await Promise.all([getStatus(repoPath, options), getCommits(repoPath, 30, options), getPresets(repoPath, options)]);
     if (status.length) commits.unshift({ hash: 'working-tree', shortHash: 'HEAD*',
       msg: `当前未提交改动 (${status.length} 个文件)`, author: 'You', relTime: 'Just now',
       isWorkingTree: true, fileCount: status.length });
     res.json({ success: true, commits, presets, repoPath, dirtyCount: status.length });
   } catch (error) { res.status(error.status || 500).json({ success: false, error: error.message }); }
+  finally { lifecycle.dispose(); }
 });
 
 app.get('/api/repos/:repoId/diff', async (req, res) => {
+  const lifecycle = requestLifecycle(res, 45000);
   try {
     const repoPath = registry.resolve(req.params.repoId);
-    const data = await loadDiff(repoPath, req.query.target || 'working-tree');
-    res.json(redactKnownSecret({ ...data, repoPath, hasFacts: await hasProjectFacts(repoPath, data) }, config.proxyKey));
+    const options = { signal: lifecycle.signal };
+    const data = await loadDiff(repoPath, req.query.target || 'working-tree', options);
+    res.json(redactKnownSecret({ ...data, repoPath, hasFacts: await hasProjectFacts(repoPath, data, options) }, config.proxyKey));
   } catch (error) { res.status(error.status || 500).json({ success: false, error: error.message }); }
+  finally { lifecycle.dispose(); }
 });
 
 app.get('/api/models', async (req, res) => {
@@ -187,7 +196,7 @@ app.get('/api/models', async (req, res) => {
 
 app.post('/api/mentor/analyze', mentorHandler({ registry, config, fetchImpl, snapshots: options.snapshots }));
 
-app.get('/api/health', (req, res) => res.json({ success: true, service: 'tech-mentor-studio' }));
+app.get('/api/health', (req, res) => res.json({ success: true, service: 'tech-mentor-studio', projectRoot: __dirname, fingerprint }));
 app.use((error, req, res, next) => {
   if (res.headersSent) return next(error);
   res.status(error.status || 500).json({ success: false, error: error.type === 'entity.parse.failed' ? '请求 JSON 格式无效' : error.type === 'entity.too.large' ? '请求超过大小限制' : '请求处理失败' });

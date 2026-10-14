@@ -1,25 +1,11 @@
 import { test, expect } from '@playwright/test';
 
-async function fixture(page) {
-  const name = "x');window.__auditExecuted=1;//.js";
-  const patch = `diff --git a/${name} b/${name}\n--- a/${name}\n+++ b/${name}\n@@ -1 +1 @@\n-old\n+new\n`;
-  await page.route('**/api/repos', route => route.fulfill({ json: { success: true, repos: [
-    { id: 'fixture', name: 'Fixture', path: '/fixture', branch: 'main', dirtyCount: 0 }
-  ] } }));
-  await page.route('**/api/repos/fixture/commits', route => route.fulfill({ json: { success: true,
-    commits: [{ hash: 'a'.repeat(40), shortHash: 'aaaaaaa', msg: 'fixture', author: 'audit', relTime: 'now' }], presets: [], dirtyCount: 0
-  } }));
-  await page.route('**/api/repos/fixture/diff?*', route => route.fulfill({ json: { success: true,
-    files: [{ path: name, patch, additions: 1, deletions: 1 }], diffText: patch, hasFacts: false
-  } }));
-  await page.route('**/api/models', route => route.fulfill({ json: { success: true, models: [{ id: 'test-model', name: 'Test Model' }] } }));
-  await page.route('**/api/tokens/keeper-stats', route => route.fulfill({ json: { success: false } }));
-}
+import { fixture } from './fixture.js';
 
 test('local resources, literal filenames and sanitized model output work under CSP', async ({ page }) => {
   const errors = []; const external = [];
   page.on('pageerror', error => errors.push(error.message));
-  page.on('request', request => { if (!request.url().startsWith('http://127.0.0.1:3301') && !request.url().startsWith('http://localhost:3301')) external.push(request.url()); });
+  page.on('request', request => { if (new URL(request.url()).origin !== new URL(process.env.MENTOR_TEST_URL || 'http://127.0.0.1:3301').origin) external.push(request.url()); });
   await fixture(page);
   const text = '<img src="/missing-audit-image" onerror="window.__auditExecuted=1">\n'
     + '<button data-action="ask" data-value="injected">invalid action</button>\n\n'

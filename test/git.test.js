@@ -103,3 +103,14 @@ test('status rename paths are NUL-safe', async t => {
   const status = await getStatus(root);
   assert.equal(status[0].path, 'new\nname'); assert.equal(status[0].oldPath, 'old\nname');
 });
+
+test('modified tracked symlinks remain excluded in worktree and historical diffs', async t => {
+  const { root, commit, git } = gitFixture(t);
+  const link = path.join(root, 'link.txt');
+  fs.symlinkSync('/fixture/first-target', link); commit('first-link');
+  fs.unlinkSync(link); fs.symlinkSync('/fixture/second-target', link);
+  const working = await loadDiff(root, 'working-tree');
+  assert.equal(working.files.length, 0); assert.ok(working.warnings.length);
+  const target = commit('modified-link');
+  assert.equal((await loadDiff(root, target)).files.length, 0);
+});

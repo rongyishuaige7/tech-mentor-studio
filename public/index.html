@@ -25,14 +25,14 @@
       <div>
         <h1 class="text-sm font-semibold tracking-wide flex items-center gap-2">
           Tech Mentor Studio
-          <span class="text-[10px] px-1.5 py-0.5 rounded bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 font-mono">P0/P1 UPGRADED</span>
+          <span class="text-[10px] px-1.5 py-0.5 rounded bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 font-mono">LOCAL WORKBENCH</span>
         </h1>
         <p class="text-[11px] text-slate-400">本地代码内化 · 架构带读 · 深度学习工作台</p>
       </div>
     </div>
 
     <!-- 顶栏状态与模型选择 -->
-    <div class="flex items-center gap-3">
+    <div id="top-tools" class="flex items-center gap-3">
       <!-- 项目事实源指示器 -->
       <div id="facts-badge" class="hidden items-center gap-1.5 bg-indigo-950/60 text-indigo-300 border border-indigo-700/50 px-2 py-0.5 rounded text-[11px]">
         <i data-lucide="file-check" class="w-3.5 h-3.5 text-indigo-400"></i>
@@ -57,7 +57,7 @@
         </div>
       </div>
 
-      <div class="flex items-center gap-2 bg-slate-800/80 px-2.5 py-1 rounded-md border border-slate-700/60 text-xs">
+      <div id="model-picker" class="flex items-center gap-2 bg-slate-800/80 px-2.5 py-1 rounded-md border border-slate-700/60 text-xs">
         <i data-lucide="cpu" class="w-3.5 h-3.5 text-indigo-400"></i>
         <select id="model-select" disabled class="bg-transparent border-none text-slate-200 focus:outline-none cursor-pointer text-xs">
           <option value="">正在查询模型…</option>
@@ -74,10 +74,15 @@
   </header>
 
   <!-- 主体工作区：三栏布局 -->
-  <main class="flex-1 flex overflow-hidden">
+  <nav id="panel-tabs" aria-label="工作区视图">
+    <button data-action="panel" data-value="repos" aria-pressed="false">仓库</button>
+    <button data-action="panel" data-value="diff" aria-pressed="true">代码差异</button>
+    <button data-action="panel" data-value="mentor" aria-pressed="false">导师</button>
+  </nav>
+  <main id="workspace" data-panel="diff" class="flex-1 flex overflow-hidden">
 
     <!-- 栏 1：仓库列表 (左栏 280px) -->
-    <aside class="w-72 border-r border-slate-800 bg-[#0d1322] flex flex-col shrink-0">
+    <aside id="repos-panel" class="w-72 border-r border-slate-800 bg-[#0d1322] flex flex-col shrink-0">
       <div class="p-3 border-b border-slate-800/80 flex items-center justify-between">
         <span class="text-xs font-semibold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
           <i data-lucide="folders" class="w-3.5 h-3.5"></i>
@@ -103,7 +108,7 @@
     </aside>
 
     <!-- 栏 2：提交时间线与 Diff 查看器 (中栏 480px) -->
-    <section class="w-[480px] border-r border-slate-800 bg-[#0e1628] flex flex-col shrink-0">
+    <section id="diff-panel" class="w-[480px] border-r border-slate-800 bg-[#0e1628] flex flex-col shrink-0">
       
       <!-- 项目信息条 -->
       <div class="p-3 border-b border-slate-800 bg-slate-900/40 flex items-center justify-between">
@@ -158,7 +163,7 @@
     </section>
 
     <!-- 栏 3：Tech Mentor 深度导师多轮对话看板 (右栏 自适应) -->
-    <section class="flex-1 bg-[#0b0f19] flex flex-col overflow-hidden">
+    <section id="mentor-panel" class="flex-1 bg-[#0b0f19] flex flex-col overflow-hidden">
       
       <!-- 快捷动作卡片条 -->
       <div class="p-3 border-b border-slate-800 bg-slate-900/60 flex items-center justify-between flex-wrap gap-2">

@@ -107,3 +107,16 @@ test('diff renderer treats plus/minus prefixes inside hunks as code and numbers 
   assert.match(html, /diff-line-del.*diff-num">2<.*---old/);
   assert.match(html, /diff-line-add.*diff-num">3<.*\+\+\+new/);
 });
+
+test('rapid chunks render once on completion without losing text', async () => {
+  const { context, get } = loadClient(url => url === '/api/mentor/analyze'
+    ? Promise.resolve(eventResponse([...Array.from({ length: 100 }, () => ({ type: 'chunk', text: 'part' })), { type: 'finished' }])) : keeperResponse());
+  let renders = 0; context.marked.parse = text => { renders++; return text; };
+  await context.startMentorAnalysis('walkthrough', '', true);
+  assert.equal(renders, 1); assert.equal(get('conversationHistory[0].content'), 'part'.repeat(100));
+});
+
+test('empty and length-limited model replies cannot report success', async () => {
+  await assert.rejects(relayCompletion(new Response('data: [DONE]\n\n'), () => {}), /没有返回/);
+  await assert.rejects(relayCompletion(new Response('data: {"choices":[{"delta":{"content":"partial"},"finish_reason":"length"}]}\n\n'), () => {}), /未完成/);
+});
