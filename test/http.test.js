@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import path from 'node:path';
 import { gitFixture } from './git-helper.js';
 import { appFixture } from './http-helper.js';
 
@@ -95,4 +96,26 @@ test('closing the HTTP client aborts a pending upstream fetch', async t => {
   controller.abort();
   await Promise.race([aborted, new Promise((resolve, reject) => { const timer = setTimeout(() => reject(new Error('upstream cancellation did not arrive')), 2000); timer.unref(); })]);
   await pending;
+});
+
+test('an unreadable scan root is skipped without hiding valid repositories', async t => {
+  const { root, write } = gitFixture(t); write('README.md', '# test\n');
+  const fileRoot = path.join(root, 'not-a-directory');
+  fs.writeFileSync(fileRoot, 'not a directory\n');
+  const { request } = await appFixture(t, root, { scanRoots: [fileRoot, root] });
+  const data = await (await request('/api/repos')).json();
+  assert.equal(data.success, true);
+  assert.equal(data.repos.some(repo => repo.path === fs.realpathSync(root)), true);
+});
+
+test('configured credentials are redacted from repository and commit metadata', async t => {
+  const { root, write, commit } = gitFixture(t);
+  write('a.js', 'a\n'); commit('fixture-only appears in subject');
+  const { request } = await appFixture(t, root);
+  const repos = await (await request('/api/repos')).json();
+  assert.equal(JSON.stringify(repos).includes('fixture-only'), false);
+  assert.match(JSON.stringify(repos), /REDACTED/);
+  const commits = await (await request(`/api/repos/${repos.repos[0].id}/commits`)).json();
+  assert.equal(JSON.stringify(commits).includes('fixture-only'), false);
+  assert.match(JSON.stringify(commits), /REDACTED/);
 });

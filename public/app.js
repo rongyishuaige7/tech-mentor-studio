@@ -151,16 +151,7 @@ function toggleTheme() {
 
 document.addEventListener('DOMContentLoaded', () => {
   initTheme();
-  marked.setOptions({
-    gfm: true,
-    breaks: true,
-    highlight: function(code, lang) {
-      if (lang && hljs.getLanguage(lang)) {
-        return hljs.highlight(code, { language: lang }).value;
-      }
-      return hljs.highlightAuto(code).value;
-    }
-  });
+  marked.setOptions({ gfm: true, breaks: true });
 
   lucide.createIcons();
   setupEventListeners();
@@ -247,7 +238,7 @@ async function loadKeeperStats() {
     const primaryLimit = (rateLimits || []).find(r => r.label === '5h');
     if (primaryLimit) {
       const remaining = primaryLimit.remainingPercent;
-      const color = remaining > 30 ? 'text-[var(--diff-add-text)]' : (remaining > 10 ? 'text-[var(--accent-terracotta)]' : 'text-[var(--diff-del-text)]');
+      const color = remaining === null ? 'text-[var(--text-muted)]' : remaining > 30 ? 'text-[var(--diff-add-text)]' : (remaining > 10 ? 'text-[var(--accent-terracotta)]' : 'text-[var(--diff-del-text)]');
       parts.push(`<span class="${color}">5h: ${remaining === null ? '等待更新' : `${remaining}%`}</span>`);
     }
 
@@ -258,10 +249,10 @@ async function loadKeeperStats() {
         <div class="space-y-1 bg-[var(--bg-card)] p-2.5 rounded-lg border border-[var(--border-app)]">
           <div class="flex justify-between items-center text-[11px]">
             <span class="font-medium text-[var(--text-primary)]">Codex ${escapeHtml(r.label)} 速率窗口</span>
-            <span class="font-mono ${r.remainingPercent > 30 ? 'text-[var(--diff-add-text)]' : 'text-[var(--accent-terracotta)]'}">${r.remainingPercent === null ? '等待更新 / 未知' : `剩余 ${r.remainingPercent}%`}</span>
+            <span class="font-mono ${r.remainingPercent === null ? 'text-[var(--text-muted)]' : r.remainingPercent > 30 ? 'text-[var(--diff-add-text)]' : 'text-[var(--accent-terracotta)]'}">${r.remainingPercent === null ? '等待更新 / 未知' : `剩余 ${r.remainingPercent}%`}</span>
           </div>
           <div class="w-full bg-[var(--progress-track)] h-1.5 rounded-full overflow-hidden">
-            <div class="h-full rounded-full ${r.remainingPercent > 30 ? 'bg-[var(--diff-add-text)]' : 'bg-[var(--accent-terracotta)]'}" style="width: ${Number(r.remainingPercent) || 0}%"></div>
+            <div class="h-full rounded-full ${r.remainingPercent === null ? 'bg-[var(--text-subtle)]' : r.remainingPercent > 30 ? 'bg-[var(--diff-add-text)]' : 'bg-[var(--accent-terracotta)]'}" style="width: ${Number(r.remainingPercent) || 0}%"></div>
           </div>
           <div class="text-[10px] text-[var(--text-subtle)] flex justify-between">
             <span>重置时间: ${r.resetAt ? new Date(r.resetAt).toLocaleString() : '未知'}</span>
@@ -288,7 +279,7 @@ async function loadKeeperStats() {
     }
   } catch (err) {
     textEl.textContent = '计量不可用';
-      if (popoverContent) popoverContent.textContent = 'Keeper 计量不可用，请检查数据库路径和 SQLite';
+    if (popoverContent) popoverContent.textContent = 'Keeper 计量不可用，请检查数据库路径和 SQLite';
   }
 }
 
@@ -661,6 +652,7 @@ function renderCommitList(commits) {
       </div>
     `;
   }).join('');
+  lucide.createIcons();
 }
 
 window.selectTarget = (targetHash) => {
@@ -905,6 +897,11 @@ async function startMentorAnalysis(mode, customPrompt = '', resetSession = false
   }
 
   showPanel('mentor');
+  if (!resetSession && (conversationHistory.length === 0 || !mentorSnapshotId || mentorRequestedTarget !== activeTarget)) {
+    // A follow-up without a usable snapshot is a fresh analysis, never a
+    // request that reuses stale evidence or a mismatched target.
+    resetSession = true;
+  }
   if (resetSession) {
     clearMentorSession();
   }
@@ -1008,7 +1005,9 @@ async function startMentorAnalysis(mode, customPrompt = '', resetSession = false
 
     if (!response.ok) {
       const error = await response.json().catch(() => ({}));
-      throw new Error(error.error || `服务响应异常: ${response.status}`);
+      const failure = new Error(error.error || `服务响应异常: ${response.status}`);
+      failure.status = response.status;
+      throw failure;
     }
 
     const reader = response.body.getReader();
@@ -1083,9 +1082,18 @@ async function startMentorAnalysis(mode, customPrompt = '', resetSession = false
       notice.textContent = '已终止生成，未保存未完成的回答';
       article.appendChild(notice);
     } else {
+      const staleSnapshot = err.status === 409 && /快照/.test(err.message);
+      if (staleSnapshot) {
+        mentorSnapshotId = null;
+        mentorRequestedTarget = null;
+        mentorResolvedTarget = null;
+        if (activeRepo) repoSessions.delete(activeRepo.id);
+      }
       const notice = document.createElement('p');
       notice.className = 'text-rose-400 text-xs mt-2';
-      notice.textContent = `分析失败: ${err.message}`;
+      notice.textContent = staleSnapshot
+        ? `分析快照已失效: ${err.message}。下一次精读或提问会重新建立快照。`
+        : `分析失败: ${err.message}`;
       article.appendChild(notice);
     }
   } finally {
@@ -1202,8 +1210,9 @@ function exportMentorMarkdown() {
     return;
   }
   const repoName = activeRepo ? activeRepo.name : 'repo';
+  const safeRepoName = repoName.replace(/[^a-zA-Z0-9_\-\.]/g, '_').slice(0, 80) || 'repo';
   const targetTag = (mentorResolvedTarget || activeTarget).replace(/[^a-zA-Z0-9_\-\.]/g, '_');
-  const fileName = `tech-mentor-${repoName}-${targetTag}.md`;
+  const fileName = `tech-mentor-${safeRepoName}-${targetTag}.md`;
 
   let fullMarkdown = `# 🧭 Tech Mentor 深度精读笔记: ${repoName}\n\n`;
   fullMarkdown += `> **代码目标**: \`${mentorResolvedTarget || activeTarget}\` | **导出时间**: ${new Date().toLocaleString()} | **仓库路径**: \`${activeRepo?.path || ''}\`\n\n`;
@@ -1266,19 +1275,6 @@ async function postProcessArticle(article) {
     pre.parentNode.insertBefore(wrapper, pre);
     wrapper.appendChild(header);
     wrapper.appendChild(pre);
-
-    const copyBtn = header.querySelector('.copy-code-btn');
-    copyBtn.addEventListener('click', async () => {
-      try {
-        await navigator.clipboard.writeText(code.innerText);
-        copyBtn.innerHTML = '<i data-lucide="check" class="w-3 h-3 text-emerald-400"></i> 已复制';
-        lucide.createIcons();
-        setTimeout(() => {
-          copyBtn.innerHTML = '<i data-lucide="copy" class="w-3 h-3"></i> 复制代码';
-          lucide.createIcons();
-        }, 2000);
-      } catch {}
-    });
   });
 
   // 3. 渲染 Mermaid 图表

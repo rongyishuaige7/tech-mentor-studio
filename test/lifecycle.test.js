@@ -176,6 +176,55 @@ test('restoring a repo session keeps its target and focused file', async () => {
   assert.equal(get('mentorRequestedTarget'), 'C1');
 });
 
+test('an expired snapshot is dropped so the next request starts a new analysis', async () => {
+  let calls = 0;
+  const bodies = [];
+  const { context, get } = loadClient((url, options) => {
+    if (url !== '/api/mentor/analyze') return keeperResponse();
+    calls++;
+    bodies.push(JSON.parse(options.body));
+    if (calls === 2) {
+      return Promise.resolve(new Response(JSON.stringify({ success: false, error: '分析快照已过期或被回收，请重新开始精读' }), {
+        status: 409, headers: { 'Content-Type': 'application/json' }
+      }));
+    }
+    return Promise.resolve(eventResponse([
+      { type: 'snapshot', snapshotId: `snap-${calls}`, requestedTarget: 'HEAD', resolvedTarget: 'HEAD' },
+      { type: 'chunk', text: 'answer' }, { type: 'finished' }
+    ]));
+  });
+  await context.startMentorAnalysis('walkthrough', '', true);
+  await context.startMentorAnalysis('custom', 'why', false);
+  assert.equal(get('mentorSnapshotId'), null);
+  assert.equal(get('mentorRequestedTarget'), null);
+  await context.startMentorAnalysis('custom', 'again', false);
+  assert.equal(bodies[2].snapshotId, null);
+  assert.equal(bodies[2].history.length, 0);
+});
+
+test('a restored focus that disappeared clears the stale session', async () => {
+  const { context, get, run } = loadClient(url => {
+    if (url === '/api/repos/B/commits') return Promise.resolve({ json: async () => ({
+      success: true, presets: [], dirtyCount: 1,
+      commits: [{ hash: 'C1', shortHash: 'C1', msg: 'one', author: 'T', relTime: 'now' }]
+    }) });
+    if (url.includes('/api/repos/B/diff')) return Promise.resolve({ json: async () => ({
+      success: true, files: [{ path: 'file.js', patch: 'diff --git a/file.js b/file.js\n+code\n', additions: 1, deletions: 0 }],
+      diffText: 'diff --git a/file.js b/file.js\n+code\n', statText: '1 个文件，+1 / -0'
+    }) });
+    return keeperResponse();
+  });
+  run("repoSessions.set('B', { conversationHistory: [{ role: 'assistant', content: 'saved' }],"
+    + " mentorSnapshotId: 'snap', mentorResolvedTarget: 'C1', mentorRequestedTarget: 'C1',"
+    + " target: 'C1', focusFile: 'gone.js', chatHtml: '<div>saved</div>' })");
+  await context.selectRepo({ id: 'B', name: 'B', path: '/repo/B' });
+  await new Promise(resolve => setImmediate(resolve));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(get('currentFocusFile'), null);
+  assert.equal(get('conversationHistory.length'), 0);
+  assert.equal(get('mentorSnapshotId'), null);
+});
+
 test('rapid chunks render once on completion without losing text', async () => {
   const { context, get } = loadClient(url => url === '/api/mentor/analyze'
     ? Promise.resolve(eventResponse([...Array.from({ length: 100 }, () => ({ type: 'chunk', text: 'part' })), { type: 'finished' }])) : keeperResponse());

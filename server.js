@@ -75,12 +75,17 @@ async function scanRepositories(refresh = false) {
   scanPending = (async () => {
     const discovered = new Set(getWatchlist());
     for (const root of DEFAULT_SCAN_ROOTS) {
-      if (!fs.existsSync(root)) continue;
-      if (fs.existsSync(path.join(root, '.git'))) discovered.add(root);
-      for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
-        if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
-        const candidate = path.join(root, entry.name);
-        if (fs.existsSync(path.join(candidate, '.git'))) discovered.add(candidate);
+      try {
+        if (!fs.existsSync(root)) continue;
+        if (fs.existsSync(path.join(root, '.git'))) discovered.add(root);
+        for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+          if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
+          const candidate = path.join(root, entry.name);
+          if (fs.existsSync(path.join(candidate, '.git'))) discovered.add(candidate);
+        }
+      } catch (error) {
+        // An unreadable or non-directory root must not hide every other repo.
+        console.warn(`跳过无法读取的扫描根目录 ${root}: ${error.message}`);
       }
     }
     const paths = [...discovered]; const repos = new Map(); let cursor = 0;
@@ -115,7 +120,7 @@ async function scanRepositories(refresh = false) {
 app.get('/api/repos', async (req, res) => {
   try {
     const repos = await scanRepositories(req.query.refresh === '1');
-    res.json({ success: true, repos });
+    res.json({ success: true, repos: redactKnownSecret(repos, config.proxyKey) });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
@@ -187,7 +192,7 @@ app.get('/api/repos/:repoId/commits', async (req, res) => {
     if (status.length) commits.unshift({ hash: 'working-tree', shortHash: 'HEAD*',
       msg: `当前未提交改动 (${status.length} 个文件)`, author: 'You', relTime: 'Just now',
       isWorkingTree: true, fileCount: status.length });
-    res.json({ success: true, commits, presets, repoPath, dirtyCount: status.length });
+    res.json(redactKnownSecret({ success: true, commits, presets, repoPath, dirtyCount: status.length }, config.proxyKey));
   } catch (error) { res.status(error.status || 500).json({ success: false, error: error.message }); }
   finally { lifecycle.dispose(); }
 });
