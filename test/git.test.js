@@ -86,6 +86,31 @@ test('sensitive files and links are excluded without claiming a clean tree', asy
   assert.equal(getCleanDiffForMentor([{ path: '.env', isSensitive: true, patch: 'AUDIT_CANARY' }], '.env'), '');
 });
 
+test('sensitive paths stay excluded after rename in worktree and history', async t => {
+  const { root, write, commit, git } = gitFixture(t);
+  write('.env', 'TOKEN=hidden-value\n'); write('base.js', 'base\n');
+  commit('base');
+  git('mv', '.env', 'config.txt');
+  fs.appendFileSync(path.join(root, 'config.txt'), 'PUBLIC=1\n');
+
+  const working = await loadDiff(root);
+  assert.equal(working.files.some(file => file.path === 'config.txt'), false);
+  assert.equal(working.diffText.includes('TOKEN=hidden-value'), false);
+  assert.ok(working.warnings.some(warning => warning.includes('.env') && warning.includes('config.txt')));
+
+  const renamed = commit('rename secret');
+  const historical = await loadDiff(root, renamed);
+  assert.equal(historical.files.length, 0);
+  assert.equal(historical.diffText.includes('TOKEN=hidden-value'), false);
+  assert.ok(historical.warnings.some(warning => warning.includes('.env')));
+
+  const [parsed] = parseDiffFiles('diff --git a/.env b/config.txt\n'
+    + 'similarity index 80%\nrename from .env\nrename to config.txt\n'
+    + '--- a/.env\n+++ b/config.txt\n@@ -1 +1 @@\n-SECRET=old\n+SECRET=new\n');
+  assert.equal(parsed.oldPath, '.env');
+  assert.equal(parsed.isSensitive, true);
+});
+
 test('configured external diff is not invoked and partial stdout remains an error', async t => {
   const { root, write, commit, git } = gitFixture(t); write('code', 'old\n'); const sha = commit('base');
   const marker = path.join(root, 'external-was-called');
