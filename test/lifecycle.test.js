@@ -108,6 +108,74 @@ test('diff renderer treats plus/minus prefixes inside hunks as code and numbers 
   assert.match(html, /diff-line-add.*diff-num">3<.*\+\+\+new/);
 });
 
+test('follow-up payload keeps the requested target instead of the resolved revision', async () => {
+  const bodies = [];
+  const { context } = loadClient((url, options) => {
+    if (url === '/api/mentor/analyze') {
+      bodies.push(JSON.parse(options.body));
+      return Promise.resolve(eventResponse([
+        { type: 'snapshot', snapshotId: 'snap', requestedTarget: 'HEAD', resolvedTarget: 'a'.repeat(40) },
+        { type: 'chunk', text: 'answer' }, { type: 'finished' }
+      ]));
+    }
+    return keeperResponse();
+  });
+  await context.startMentorAnalysis('walkthrough', '', true);
+  await context.startMentorAnalysis('custom', 'why', false);
+  assert.equal(bodies[0].target, 'HEAD');
+  assert.equal(bodies[1].target, 'HEAD');
+  assert.equal(bodies[1].snapshotId, 'snap');
+  assert.equal(bodies[1].history.length, 1);
+});
+
+test('changing target or focus invalidates the mentor session', async () => {
+  const { context, get } = loadClient(url => {
+    if (url === '/api/mentor/analyze') {
+      return Promise.resolve(eventResponse([
+        { type: 'snapshot', snapshotId: 'snap', requestedTarget: 'HEAD', resolvedTarget: 'HEAD' },
+        { type: 'chunk', text: 'answer' }, { type: 'finished' }
+      ]));
+    }
+    if (url.includes('/diff')) return Promise.resolve({ json: async () => ({ success: true, files: [], diffText: '' }) });
+    return keeperResponse();
+  });
+  await context.startMentorAnalysis('walkthrough', '', true);
+  assert.equal(get('conversationHistory.length'), 1);
+  context.selectTarget('other');
+  assert.equal(get('conversationHistory.length'), 0);
+  assert.equal(get('mentorSnapshotId'), null);
+
+  await context.startMentorAnalysis('walkthrough', '', true);
+  assert.equal(get('conversationHistory.length'), 1);
+  context.setFocusFile('src/file.js');
+  assert.equal(get('conversationHistory.length'), 0);
+  assert.equal(get('mentorSnapshotId'), null);
+});
+
+test('restoring a repo session keeps its target and focused file', async () => {
+  const { context, get, run } = loadClient(url => {
+    if (url === '/api/repos/B/commits') return Promise.resolve({ json: async () => ({
+      success: true, presets: [], dirtyCount: 1,
+      commits: [{ hash: 'C1', shortHash: 'C1', msg: 'one', author: 'T', relTime: 'now' }]
+    }) });
+    if (url.includes('/api/repos/B/diff')) return Promise.resolve({ json: async () => ({
+      success: true, files: [{ path: 'file.js', patch: 'diff --git a/file.js b/file.js\n+code\n', additions: 1, deletions: 0 }],
+      diffText: 'diff --git a/file.js b/file.js\n+code\n', statText: '1 个文件，+1 / -0'
+    }) });
+    return keeperResponse();
+  });
+  run("repoSessions.set('B', { conversationHistory: [{ role: 'assistant', content: 'saved' }],"
+    + " mentorSnapshotId: 'snap', mentorResolvedTarget: 'C1', mentorRequestedTarget: 'C1',"
+    + " target: 'C1', focusFile: 'file.js', chatHtml: '<div>saved</div>' })");
+  await context.selectRepo({ id: 'B', name: 'B', path: '/repo/B' });
+  await new Promise(resolve => setImmediate(resolve));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(get('activeTarget'), 'C1');
+  assert.equal(get('currentFocusFile'), 'file.js');
+  assert.equal(get('conversationHistory.length'), 1);
+  assert.equal(get('mentorRequestedTarget'), 'C1');
+});
+
 test('rapid chunks render once on completion without losing text', async () => {
   const { context, get } = loadClient(url => url === '/api/mentor/analyze'
     ? Promise.resolve(eventResponse([...Array.from({ length: 100 }, () => ({ type: 'chunk', text: 'part' })), { type: 'finished' }])) : keeperResponse());

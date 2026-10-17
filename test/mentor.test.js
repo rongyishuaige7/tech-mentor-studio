@@ -63,5 +63,39 @@ test('clean worktree fallback reports the actual analyzed commit', async t => {
   const { root, write, commit } = gitFixture(t); write('code.js', 'code\n'); const head = commit('first');
   const { request } = await appFixture(t, root, { fetchImpl: async () => completion() }); await request('/api/repos');
   const response = await request('/api/mentor/analyze', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ repoPath: root }) });
-  assert.equal(events(await response.text()).find(event => event.type === 'snapshot').resolvedTarget, head);
+  const snapshot = events(await response.text()).find(event => event.type === 'snapshot');
+  assert.equal(snapshot.resolvedTarget, head);
+  assert.equal(snapshot.requestedTarget, 'working-tree');
+});
+
+test('follow-ups keep the requested target across clean fallback and ranges', async t => {
+  const { root, write, commit } = gitFixture(t);
+  write('code.js', 'v0\n'); commit('c0');
+  for (let i = 1; i < 4; i++) { write('code.js', `v${i}\n`); commit(`c${i}`); }
+  const payloads = [];
+  const { request } = await appFixture(t, root, {
+    fetchImpl: async (url, options) => { payloads.push(JSON.parse(options.body)); return completion(); }
+  });
+  await request('/api/repos');
+  const analyze = body => request('/api/mentor/analyze', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ repoPath: root, ...body })
+  });
+
+  const clean = events(await (await analyze({ target: 'working-tree' })).text()).find(event => event.type === 'snapshot');
+  const cleanFollow = await analyze({ target: 'working-tree', snapshotId: clean.snapshotId,
+    history: [{ role: 'assistant', content: 'answer' }], customPrompt: 'why' });
+  assert.equal(cleanFollow.status, 200);
+  assert.match(await cleanFollow.text(), /finished/);
+  assert.equal(payloads[1].messages[1].content, payloads[0].messages[1].content);
+
+  const range = events(await (await analyze({ target: 'range:HEAD~3..HEAD' })).text()).find(event => event.type === 'snapshot');
+  assert.equal(range.requestedTarget, 'range:HEAD~3..HEAD');
+  const rangeFollow = await analyze({ target: 'range:HEAD~3..HEAD', snapshotId: range.snapshotId,
+    history: [{ role: 'assistant', content: 'answer' }], customPrompt: 'why' });
+  assert.equal(rangeFollow.status, 200);
+  assert.match(await rangeFollow.text(), /finished/);
+
+  const resolvedOnly = await analyze({ target: range.resolvedTarget, snapshotId: range.snapshotId,
+    history: [{ role: 'assistant', content: 'answer' }], customPrompt: 'why' });
+  assert.equal(resolvedOnly.status, 409);
 });

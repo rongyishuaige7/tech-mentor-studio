@@ -23,6 +23,7 @@ let currentDiffAbortController = null;
 let conversationHistory = [];
 let mentorSnapshotId = null;
 let mentorResolvedTarget = null;
+let mentorRequestedTarget = null;
 const repoSessions = new Map();
 
 const ACTION_PROMPTS = {
@@ -40,30 +41,30 @@ function saveCurrentRepoSession() {
       conversationHistory: [...conversationHistory],
       mentorSnapshotId,
       mentorResolvedTarget,
+      mentorRequestedTarget,
+      target: activeTarget,
+      focusFile: currentFocusFile,
       chatHtml: chatStream ? chatStream.innerHTML : null
     });
   }
 }
 
-function restoreRepoSession(repoId) {
+function restoreRepoSession(saved) {
+  if (!saved?.conversationHistory?.length) return false;
   currentAbortController?.abort();
   currentAbortController = null;
   document.getElementById('mentor-status-bar')?.classList.add('hidden');
-
-  const saved = repoSessions.get(repoId);
+  mentorSessionVersion++;
+  conversationHistory = [...saved.conversationHistory];
+  mentorSnapshotId = saved.mentorSnapshotId;
+  mentorResolvedTarget = saved.mentorResolvedTarget;
+  mentorRequestedTarget = saved.mentorRequestedTarget || saved.target || null;
   const chatStream = document.getElementById('mentor-chat-stream');
-  if (saved && saved.conversationHistory && saved.conversationHistory.length > 0) {
-    mentorSessionVersion++;
-    conversationHistory = [...saved.conversationHistory];
-    mentorSnapshotId = saved.mentorSnapshotId;
-    mentorResolvedTarget = saved.mentorResolvedTarget;
-    if (chatStream && saved.chatHtml) {
-      chatStream.innerHTML = saved.chatHtml;
-      lucide.createIcons();
-    }
-  } else {
-    clearMentorSession();
+  if (chatStream && saved.chatHtml) {
+    chatStream.innerHTML = saved.chatHtml;
+    lucide.createIcons();
   }
+  return true;
 }
 
 function clearCurrentMentorSession() {
@@ -74,7 +75,8 @@ function clearCurrentMentorSession() {
 }
 
 function triggerMentorAction(mode) {
-  if (conversationHistory.length === 0 || (mentorResolvedTarget && activeTarget !== mentorResolvedTarget)) {
+  const sameSelection = Boolean(mentorSnapshotId) && mentorRequestedTarget === activeTarget;
+  if (conversationHistory.length === 0 || !sameSelection) {
     startMentorAnalysis(mode, '', true);
   } else {
     const prompt = ACTION_PROMPTS[mode] || mode;
@@ -553,6 +555,14 @@ async function handleAddRepoManual() {
   }
 }
 
+function isKnownTarget(target, data) {
+  if (typeof target !== 'string' || !target) return false;
+  if (target === 'working-tree') return true;
+  if ((data.commits || []).some(commit => commit.hash === target)) return true;
+  if ((data.presets || []).some(preset => preset.hash === target)) return true;
+  return /^[0-9a-f]{40}$/.test(target);
+}
+
 // 2. 选择仓库并加载提交记录
 async function selectRepo(repo) {
   saveCurrentRepoSession();
@@ -569,7 +579,7 @@ async function selectRepo(repo) {
   activeTarget = 'working-tree';
   activeRepo = repo;
   currentFocusFile = null;
-  restoreRepoSession(repo.id);
+  clearMentorSession();
   handleRepoFilter({ target: document.getElementById('repo-search') });
 
   document.getElementById('active-repo-name').textContent = repo.name;
@@ -589,19 +599,27 @@ async function selectRepo(repo) {
     if (sequence !== repoRequestSequence || activeRepo?.id !== repo.id) return;
     currentPresets = data.presets || [];
     currentCommits = data.commits;
+
+    const defaultTarget = data.commits.length === 0 ? 'working-tree'
+      : data.dirtyCount === 0
+        ? (data.commits.find(commit => !commit.isWorkingTree)?.hash || data.commits[0].hash)
+        : data.commits[0].hash;
+    const saved = repoSessions.get(repo.id);
+    let target = defaultTarget;
+    let focusFile = null;
+    if (saved?.target && isKnownTarget(saved.target, data)) {
+      target = saved.target;
+      focusFile = saved.focusFile || null;
+      if (!restoreRepoSession(saved)) repoSessions.delete(repo.id);
+    } else if (saved) {
+      repoSessions.delete(repo.id);
+    }
+
+    activeTarget = target;
+    currentFocusFile = focusFile;
     renderCommitPresets(currentPresets);
     renderCommitList(currentCommits);
-
-    if (data.commits.length > 0) {
-      if (data.dirtyCount === 0) {
-        const latestRealCommit = data.commits.find(c => !c.isWorkingTree);
-        selectTarget(latestRealCommit ? latestRealCommit.hash : data.commits[0].hash);
-      } else {
-        selectTarget(data.commits[0].hash);
-      }
-    } else {
-      selectTarget('working-tree');
-    }
+    fetchDiff(repo.id, target);
   } catch (err) {
     if (sequence !== repoRequestSequence || err.name === 'AbortError') return;
     commitListEl.innerHTML = `<div class="text-xs text-rose-400 text-center py-4">读取提交失败: ${escapeHtml(err.message)}</div>`;
@@ -646,10 +664,11 @@ function renderCommitList(commits) {
 }
 
 window.selectTarget = (targetHash) => {
+  if (targetHash !== activeTarget || currentFocusFile !== null) clearCurrentMentorSession();
   activeTarget = targetHash;
+  currentFocusFile = null;
   renderCommitPresets(currentPresets);
   renderCommitList(currentCommits);
-  currentFocusFile = null;
   if (activeRepo) {
     fetchDiff(activeRepo.id, targetHash);
   }
@@ -693,6 +712,12 @@ async function fetchDiff(repoId, target) {
 
     currentDiffFiles = data.files || [];
     currentDiffWarnings = data.warnings || [];
+    if (currentFocusFile && !currentDiffFiles.some(file => file.path === currentFocusFile)) {
+      // The restored selection no longer contains this file; do not let a stale
+      // focus silently reuse a mentor snapshot captured for it.
+      currentFocusFile = null;
+      clearCurrentMentorSession();
+    }
     renderFileFilterChips(currentDiffFiles);
 
     const statBadge = document.getElementById('diff-stat-badge');
@@ -785,8 +810,10 @@ function renderFileFilterChips(files) {
 }
 
 window.setFocusFile = (filePath) => {
-  if (currentFocusFile !== filePath) clearMentorSession();
-  currentFocusFile = filePath;
+  if (currentFocusFile !== filePath) {
+    clearCurrentMentorSession();
+    currentFocusFile = filePath;
+  }
   renderFileFilterChips(currentDiffFiles);
   renderActiveDiff();
 };
@@ -962,7 +989,7 @@ async function startMentorAnalysis(mode, customPrompt = '', resetSession = false
 
   const payload = {
     repoPath: activeRepo.path,
-    target: mentorSnapshotId ? (mentorResolvedTarget || activeTarget) : activeTarget,
+    target: activeTarget,
     mode,
     customPrompt,
     focusFile: currentFocusFile,
@@ -1004,6 +1031,7 @@ async function startMentorAnalysis(mode, customPrompt = '', resetSession = false
           if (event.type === 'snapshot') {
             mentorSnapshotId = event.snapshotId;
             mentorResolvedTarget = event.resolvedTarget;
+            mentorRequestedTarget = typeof event.requestedTarget === 'string' ? event.requestedTarget : activeTarget;
           } else if (event.type === 'status') {
             statusText.textContent = event.message;
           } else if (event.type === 'chunk' && !finalized) {
@@ -1117,6 +1145,7 @@ function clearMentorSession() {
   conversationHistory = [];
   mentorSnapshotId = null;
   mentorResolvedTarget = null;
+  mentorRequestedTarget = null;
   const chatStream = document.getElementById('mentor-chat-stream');
   chatStream.innerHTML = `
     <div id="mentor-empty-state" class="h-full flex flex-col items-center justify-center text-center p-8 text-[var(--text-muted)]">

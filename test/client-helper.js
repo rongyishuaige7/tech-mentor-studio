@@ -35,7 +35,8 @@ export function loadClient(fetcher) {
   context.window = context;
   vm.runInContext(fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8'), context);
   vm.runInContext("modelsReady = true; activeRepo = { id: 'B', name: 'B', path: '/repo/B' }; activeTarget = 'HEAD';", context);
-  return { context, nodes, get: expression => vm.runInContext(expression, context) };
+  return { context, nodes, get: expression => vm.runInContext(expression, context),
+    run: code => vm.runInContext(code, context) };
 }
 
 export function eventResponse(events) {
