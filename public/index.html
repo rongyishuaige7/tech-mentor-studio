@@ -6,68 +6,77 @@
   <title>Tech Mentor Studio | 本地代码内化与导师工作台</title>
   <!-- 固定版本资源由 npm run build 在本机生成 -->
   <link rel="stylesheet" href="/vendor/tailwind.css">
-  <link rel="stylesheet" href="/vendor/highlight.css">
+  <link id="highlight-theme" rel="stylesheet" href="/vendor/highlight.css">
   <script defer src="/vendor/lucide.js"></script>
   <script defer src="/vendor/marked.js"></script>
   <script defer src="/vendor/purify.js"></script>
   <script defer src="/vendor/highlight.js"></script>
   <script defer src="/vendor/mermaid.js"></script>
+  <link rel="icon" type="image/svg+xml" href="/logo.svg">
   <link rel="stylesheet" href="/styles.css">
 </head>
-<body class="bg-[#0b0f19] text-slate-200 font-sans h-screen flex flex-col overflow-hidden antialiased select-none">
+<body class="font-sans h-screen flex flex-col overflow-hidden antialiased select-none">
 
-  <!-- 顶部导航栏 -->
-  <header class="h-14 border-b border-slate-800 bg-slate-900/80 backdrop-blur px-4 flex items-center justify-between shrink-0 z-20">
+  <!-- 顶部导航栏 (Claude Warm Style) -->
+  <header class="h-14 border-b border-[var(--border-app)] bg-[var(--bg-header)]/95 backdrop-blur px-4 flex items-center justify-between shrink-0 z-20 transition-colors">
     <div class="flex items-center gap-3">
-      <div class="w-8 h-8 rounded-lg bg-indigo-600 flex items-center justify-center shadow-lg shadow-indigo-500/20">
-        <i data-lucide="compass" class="w-5 h-5 text-white"></i>
+      <div class="w-9 h-9 rounded-xl bg-[var(--btn-action-bg)] border border-[var(--border-app)] flex items-center justify-center shadow-sm shrink-0" title="Tech Mentor Studio">
+        <svg class="w-5 h-5 text-[var(--accent-terracotta)]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-label="Claude Spark Icon">
+          <path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3Z"/>
+        </svg>
       </div>
       <div>
-        <h1 class="text-sm font-semibold tracking-wide flex items-center gap-2">
+        <h1 class="text-[14px] font-semibold tracking-tight text-[var(--text-primary)] flex items-center gap-2">
           Tech Mentor Studio
-          <span class="text-[10px] px-1.5 py-0.5 rounded bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 font-mono">LOCAL WORKBENCH</span>
+          <span class="text-[10px] px-2 py-0.5 rounded-full bg-[var(--accent-terracotta-bg)] text-[var(--accent-terracotta)] border border-[var(--accent-terracotta-border)] font-mono tracking-wide">STUDIO</span>
         </h1>
-        <p class="text-[11px] text-slate-400">本地代码内化 · 架构带读 · 深度学习工作台</p>
+        <p class="text-[11px] text-[var(--text-muted)] leading-tight">本地代码内化 · 架构带读 · 深度学习工作台</p>
       </div>
     </div>
 
     <!-- 顶栏状态与模型选择 -->
-    <div id="top-tools" class="flex items-center gap-3">
+    <div id="top-tools" class="flex items-center gap-2">
       <!-- 项目事实源指示器 -->
-      <div id="facts-badge" class="hidden items-center gap-1.5 bg-indigo-950/60 text-indigo-300 border border-indigo-700/50 px-2 py-0.5 rounded text-[11px]">
-        <i data-lucide="file-check" class="w-3.5 h-3.5 text-indigo-400"></i>
+      <div id="facts-badge" class="hidden items-center gap-1.5 bg-[var(--btn-action-bg)] text-[var(--text-primary)] border border-[var(--border-app)] px-2.5 py-1 rounded-md text-[11px]">
+        <i data-lucide="file-check-2" class="w-3.5 h-3.5 text-[var(--accent-terracotta)]"></i>
         <span>已挂载项目规范 (SSOT)</span>
       </div>
 
       <!-- CPA / Keeper 实时用量指示器与详情浮窗 -->
       <div class="relative">
-        <div id="keeper-token-pill" class="flex items-center gap-2 bg-slate-800/80 px-2.5 py-1 rounded-md border border-slate-700/60 text-xs cursor-pointer hover:bg-slate-700/70 transition" title="点击查看 CPA / Keeper 实时统计与 Codex 速率额度详情">
-          <i data-lucide="activity" class="w-3.5 h-3.5 text-indigo-400"></i>
-          <span id="keeper-token-text" class="text-slate-300 font-mono text-[11px]">CPA 计量连接中...</span>
-          <i data-lucide="chevron-down" class="w-3 h-3 text-slate-500"></i>
+        <div id="keeper-token-pill" class="flex items-center gap-2 bg-[var(--btn-action-bg)] px-2.5 py-1 rounded-md border border-[var(--border-app)] text-xs cursor-pointer hover:bg-[var(--btn-action-hover)] transition" title="点击查看 CPA / Keeper 实时统计与 Codex 速率额度详情">
+          <i data-lucide="activity" class="w-3.5 h-3.5 text-[var(--accent-terracotta)]"></i>
+          <span id="keeper-token-text" class="text-[var(--text-primary)] font-mono text-[11px]">CPA 计量连接中...</span>
+          <i data-lucide="chevron-down" class="w-3 h-3 text-[var(--text-subtle)]"></i>
         </div>
-        <div id="keeper-detail-popover" class="hidden absolute right-0 mt-2 w-72 bg-slate-900 border border-slate-700 rounded-lg p-3 z-50 text-xs shadow-xl space-y-2.5">
-          <div class="text-[11px] font-semibold text-slate-400 uppercase tracking-wider flex items-center justify-between pb-1 border-b border-slate-800">
+        <div id="keeper-detail-popover" class="hidden absolute right-0 mt-2 w-72 bg-[var(--bg-surface)] border border-[var(--border-app)] rounded-xl p-3 z-50 text-xs shadow-2xl space-y-2.5">
+          <div class="text-[11px] font-semibold text-[var(--text-muted)] uppercase tracking-wider flex items-center justify-between pb-1.5 border-b border-[var(--border-app)]">
             <span>CPA / Keeper 实时监控</span>
-            <span id="keeper-today-date" class="font-mono text-indigo-400">--</span>
+            <span id="keeper-today-date" class="font-mono text-[var(--accent-terracotta)]">--</span>
           </div>
           <div id="keeper-popover-content" class="space-y-2">
-            <div class="text-slate-500 text-[11px]">正在加载用量...</div>
+            <div class="text-[var(--text-muted)] text-[11px]">正在加载用量...</div>
           </div>
         </div>
       </div>
 
-      <div id="model-picker" class="flex items-center gap-2 bg-slate-800/80 px-2.5 py-1 rounded-md border border-slate-700/60 text-xs">
-        <i data-lucide="cpu" class="w-3.5 h-3.5 text-indigo-400"></i>
-        <select id="model-select" disabled class="bg-transparent border-none text-slate-200 focus:outline-none cursor-pointer text-xs">
+      <div id="model-picker" class="flex items-center gap-2 bg-[var(--btn-action-bg)] px-2.5 py-1 rounded-md border border-[var(--border-app)] text-xs">
+        <i data-lucide="cpu" class="w-3.5 h-3.5 text-[var(--accent-terracotta)]"></i>
+        <select id="model-select" disabled class="bg-transparent border-none text-[var(--text-primary)] focus:outline-none cursor-pointer text-xs">
           <option value="">正在查询模型…</option>
         </select>
       </div>
 
-      <span id="model-status" class="text-[10px] text-slate-400" role="status"></span>
-      <button id="btn-retry-models" class="text-xs text-indigo-300" title="重新查询可用模型">重试模型</button>
+      <span id="model-status" class="text-[10px] text-[var(--text-muted)]" role="status"></span>
+      <button id="btn-retry-models" class="text-xs text-[var(--accent-terracotta)] hover:opacity-80 transition" title="重新查询可用模型">重试模型</button>
 
-      <button id="btn-refresh" class="p-1.5 rounded hover:bg-slate-800 text-slate-400 hover:text-slate-200 transition" title="刷新所有仓库">
+      <!-- 日夜模式切换按钮 -->
+      <button id="btn-theme-toggle" class="p-1.5 rounded hover:bg-[var(--btn-action-hover)] text-[var(--text-muted)] hover:text-[var(--text-primary)] transition" title="切换日夜模式 (深色 / 浅色)" aria-label="切换日夜模式">
+        <i data-lucide="sun" id="theme-icon-sun" class="w-4 h-4 hidden"></i>
+        <i data-lucide="moon" id="theme-icon-moon" class="w-4 h-4"></i>
+      </button>
+
+      <button id="btn-refresh" class="p-1.5 rounded hover:bg-[var(--btn-action-hover)] text-[var(--text-muted)] hover:text-[var(--text-primary)] transition" title="刷新所有仓库">
         <i data-lucide="refresh-cw" class="w-4 h-4"></i>
       </button>
     </div>
@@ -82,150 +91,157 @@
   <main id="workspace" data-panel="diff" class="flex-1 flex overflow-hidden">
 
     <!-- 栏 1：仓库列表 (左栏 280px) -->
-    <aside id="repos-panel" class="w-72 border-r border-slate-800 bg-[#0d1322] flex flex-col shrink-0">
-      <div class="p-3 border-b border-slate-800/80 flex items-center justify-between">
-        <span class="text-xs font-semibold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
+    <aside id="repos-panel" class="w-72 border-r border-[var(--border-app)] bg-[var(--bg-panel-repos)] flex flex-col shrink-0 transition-colors">
+      <div class="p-3 border-b border-[var(--border-app)] flex items-center justify-between">
+        <span class="text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)] flex items-center gap-1.5">
           <i data-lucide="folders" class="w-3.5 h-3.5"></i>
           本地代码仓库 (<span id="repo-count">0</span>)
         </span>
-        <button id="btn-add-repo" class="text-xs text-indigo-400 hover:text-indigo-300 flex items-center gap-1 p-1 hover:bg-slate-800 rounded">
-          <i data-lucide="plus" class="w-3.5 h-3.5"></i> 添加
-        </button>
+        <div class="flex items-center gap-1">
+          <button id="btn-add-repo" class="text-xs text-[var(--accent-terracotta)] hover:opacity-80 flex items-center gap-1 px-1.5 py-1 hover:bg-[var(--btn-action-hover)] rounded transition" title="在 Finder 中直接选择仓库目录">
+            <i data-lucide="folder-plus" class="w-3.5 h-3.5"></i> 选择目录
+          </button>
+          <button id="btn-add-repo-manual" class="text-xs text-[var(--text-muted)] hover:text-[var(--text-primary)] p-1 hover:bg-[var(--btn-action-hover)] rounded transition" title="手动输入绝对路径">
+            <i data-lucide="folder-input" class="w-3.5 h-3.5"></i>
+          </button>
+        </div>
       </div>
 
       <!-- 搜索框 -->
-      <div class="p-2 border-b border-slate-800/60">
+      <div class="p-2 border-b border-[var(--border-app)]">
         <div class="relative">
-          <i data-lucide="search" class="w-3.5 h-3.5 absolute left-2.5 top-2.5 text-slate-500"></i>
-          <input type="text" id="repo-search" placeholder="筛选项目..." class="w-full bg-slate-900 border border-slate-800 rounded px-2.5 py-1.5 pl-8 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-indigo-500/60">
+          <i data-lucide="search" class="w-3.5 h-3.5 absolute left-2.5 top-2.5 text-[var(--text-subtle)]"></i>
+          <input type="text" id="repo-search" placeholder="筛选项目..." class="w-full bg-[var(--bg-input)] border border-[var(--border-app)] rounded-md px-2.5 py-1.5 pl-8 text-xs text-[var(--text-primary)] placeholder-[var(--text-subtle)] focus:outline-none focus:border-[var(--accent-terracotta)] transition">
         </div>
       </div>
 
       <!-- 仓库滚动列表 -->
-      <div id="repo-list" class="flex-1 overflow-y-auto divide-y divide-slate-800/40 p-1.5 space-y-1">
-        <div class="text-xs text-slate-500 text-center py-8">正在扫描本地 Git 仓库...</div>
+      <div id="repo-list" class="flex-1 overflow-y-auto divide-y divide-[var(--border-subtle)] p-1.5 space-y-1">
+        <div class="text-xs text-[var(--text-subtle)] text-center py-8">正在扫描本地 Git 仓库...</div>
       </div>
     </aside>
 
     <!-- 栏 2：提交时间线与 Diff 查看器 (中栏 480px) -->
-    <section id="diff-panel" class="w-[480px] border-r border-slate-800 bg-[#0e1628] flex flex-col shrink-0">
+    <section id="diff-panel" class="w-[480px] border-r border-[var(--border-app)] bg-[var(--bg-panel-diff)] flex flex-col shrink-0 transition-colors">
       
       <!-- 项目信息条 -->
-      <div class="p-3 border-b border-slate-800 bg-slate-900/40 flex items-center justify-between">
+      <div class="p-3 border-b border-[var(--border-app)] bg-[var(--bg-header)] flex items-center justify-between">
         <div class="truncate">
           <div class="flex items-center gap-2">
-            <h2 id="active-repo-name" class="text-sm font-semibold text-slate-100 truncate">未选择项目</h2>
-            <span id="active-repo-branch" class="text-[10px] px-1.5 py-0.2 rounded bg-slate-800 text-slate-300 border border-slate-700/60 font-mono hidden">main</span>
+            <h2 id="active-repo-name" class="text-sm font-semibold text-[var(--text-primary)] truncate">未选择项目</h2>
+            <span id="active-repo-branch" class="text-[10px] px-1.5 py-0.2 rounded bg-[var(--btn-action-bg)] text-[var(--text-primary)] border border-[var(--border-app)] font-mono hidden">main</span>
           </div>
-          <p id="active-repo-path" class="text-[11px] text-slate-500 truncate mt-0.5 select-text font-mono">请从左侧选择仓库</p>
+          <p id="active-repo-path" class="text-[11px] text-[var(--text-muted)] truncate mt-0.5 select-text font-mono">请从左侧选择仓库</p>
         </div>
       </div>
 
       <!-- 提交列表 / 工作区切换栏 -->
-      <div class="h-44 border-b border-slate-800 flex flex-col shrink-0">
-        <div class="px-3 py-1.5 bg-slate-900/60 border-b border-slate-800/60 text-[11px] font-medium text-slate-400 flex items-center justify-between">
+      <div class="h-44 border-b border-[var(--border-app)] flex flex-col shrink-0">
+        <div class="px-3 py-1.5 bg-[var(--bg-header)] border-b border-[var(--border-app)] text-[11px] font-medium text-[var(--text-muted)] flex items-center justify-between">
           <div class="flex items-center gap-1.5">
             <span>改动历史</span>
             <div id="commit-presets-bar" class="flex items-center gap-1"></div>
           </div>
-          <span class="text-[10px] text-slate-500">单次/聚合</span>
+          <span class="text-[10px] text-[var(--text-subtle)]">单次/聚合</span>
         </div>
-        <div id="commit-list" class="flex-1 overflow-y-auto divide-y divide-slate-800/30 text-xs">
-          <div class="text-slate-500 text-center py-6 text-xs">从左侧选择项目后查看变动</div>
+        <div id="commit-list" class="flex-1 overflow-y-auto divide-y divide-[var(--border-subtle)] text-xs">
+          <div class="text-[var(--text-subtle)] text-center py-6 text-xs">从左侧选择项目后查看变动</div>
         </div>
       </div>
 
-      <!-- P0/P1: 变动文件过滤小工具条 -->
-      <div class="px-3 py-2 bg-slate-900/80 border-b border-slate-800 flex flex-col gap-1.5">
+      <!-- 变动文件过滤工具条 -->
+      <div class="px-3 py-2 bg-[var(--bg-header)] border-b border-[var(--border-app)] flex flex-col gap-1.5">
         <div class="flex items-center justify-between">
           <div class="flex items-center gap-2 truncate">
-            <i data-lucide="file-diff" class="w-3.5 h-3.5 text-indigo-400"></i>
-            <span id="diff-target-label" class="text-xs font-mono font-medium text-slate-300 truncate">代码差异</span>
+            <i data-lucide="file-diff" class="w-3.5 h-3.5 text-[var(--accent-terracotta)]"></i>
+            <span id="diff-target-label" class="text-xs font-mono font-medium text-[var(--text-primary)] truncate">代码差异</span>
           </div>
           <div class="flex items-center gap-2">
-            <button id="btn-copy-diff" class="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-slate-200 border border-slate-700/60 transition flex items-center gap-1" title="复制当前展示的代码差异">
+            <button id="btn-copy-diff" class="text-[10px] px-2 py-0.5 rounded bg-[var(--btn-action-bg)] hover:bg-[var(--btn-action-hover)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] border border-[var(--border-app)] transition flex items-center gap-1" title="复制当前展示的代码差异">
               <i data-lucide="copy" class="w-3 h-3"></i> 复制Diff
             </button>
-            <span id="diff-stat-badge" class="text-[10px] px-2 py-0.5 rounded bg-slate-800 font-mono text-slate-400 border border-slate-700">0 行变动</span>
+            <span id="diff-stat-badge" class="text-[10px] px-2 py-0.5 rounded bg-[var(--btn-action-bg)] font-mono text-[var(--text-muted)] border border-[var(--border-app)]">0 行变动</span>
           </div>
         </div>
         <!-- 文件过滤标签流 -->
         <div id="file-filter-chips" class="flex items-center gap-1.5 overflow-x-auto py-1 text-[11px] no-scrollbar">
-          <span class="text-slate-500 text-[10px]">变动文件:</span>
-          <button class="chip-active px-2 py-0.5 rounded text-[10px] font-mono bg-indigo-600 text-white shrink-0">全部文件</button>
+          <span class="text-[var(--text-subtle)] text-[10px]">变动文件:</span>
+          <button class="chip-active px-2 py-0.5 rounded text-[10px] font-mono bg-[var(--accent-terracotta)] text-[#ffffff] font-semibold shrink-0">全部文件</button>
         </div>
       </div>
 
       <!-- Diff 内容滚动展示 -->
-      <div class="flex-1 overflow-y-auto bg-[#0a0e17] p-2 select-text font-mono text-[11px]">
-        <div id="diff-content" class="text-slate-300 whitespace-pre-wrap leading-relaxed"><span class="text-slate-600">// 差异查看器就绪</span></div>
+      <div class="flex-1 overflow-y-auto bg-[var(--bg-diff-content)] p-2 select-text font-mono text-[11px] transition-colors">
+        <div id="diff-content" class="text-[var(--text-primary)] whitespace-pre-wrap leading-relaxed"><span class="text-[var(--text-subtle)]">// 差异查看器就绪</span></div>
       </div>
     </section>
 
-    <!-- 栏 3：Tech Mentor 深度导师多轮对话看板 (右栏 自适应) -->
-    <section id="mentor-panel" class="flex-1 bg-[#0b0f19] flex flex-col overflow-hidden">
+    <!-- 栏 3：Tech Mentor 深度导师对话看板 (右栏 自适应) -->
+    <section id="mentor-panel" class="flex-1 bg-[var(--bg-panel-mentor)] flex flex-col overflow-hidden transition-colors">
       
-      <!-- 快捷动作卡片条 -->
-      <div class="p-3 border-b border-slate-800 bg-slate-900/60 flex items-center justify-between flex-wrap gap-2">
+      <!-- 快捷动作卡片条 (Claude 质感统一微胶囊) -->
+      <div class="p-3 border-b border-[var(--border-app)] bg-[var(--bg-header)] flex items-center justify-between flex-wrap gap-2">
         <div class="flex items-center gap-2 flex-wrap">
-          <span class="text-xs font-semibold text-slate-300 flex items-center gap-1.5 mr-1">
-            <i data-lucide="sparkles" class="w-3.5 h-3.5 text-amber-400"></i>
+          <span class="text-xs font-medium text-[var(--text-muted)] flex items-center gap-1.5 mr-1">
+            <i data-lucide="sparkles" class="w-3.5 h-3.5 text-[var(--accent-terracotta)]"></i>
             一键精读:
           </span>
-          <button id="btn-walkthrough" class="btn-action bg-indigo-600/20 text-indigo-300 hover:bg-indigo-600/30 border border-indigo-500/30 px-2.5 py-1 rounded text-xs flex items-center gap-1.5 transition">
-            <i data-lucide="layout-grid" class="w-3 h-3"></i> 🏛️ 四阶全景带读
+          <button id="btn-walkthrough" class="btn-action px-2.5 py-1 rounded-md text-xs flex items-center gap-1.5 transition">
+            <i data-lucide="compass" class="w-3.5 h-3.5 text-[var(--accent-terracotta)]"></i> 全景架构带读
           </button>
-          <button id="btn-anatomy" class="btn-action bg-purple-600/20 text-purple-300 hover:bg-purple-600/30 border border-purple-500/30 px-2.5 py-1 rounded text-xs flex items-center gap-1.5 transition">
-            <i data-lucide="code" class="w-3 h-3"></i> 🔬 核心代码实相
+          <button id="btn-anatomy" class="btn-action px-2.5 py-1 rounded-md text-xs flex items-center gap-1.5 transition">
+            <i data-lucide="code-2" class="w-3.5 h-3.5 text-[var(--accent-terracotta)]"></i> 核心代码实相
           </button>
-          <button id="btn-pitfalls" class="btn-action bg-rose-600/20 text-rose-300 hover:bg-rose-600/30 border border-rose-500/30 px-2.5 py-1 rounded text-xs flex items-center gap-1.5 transition">
-            <i data-lucide="shield-alert" class="w-3 h-3"></i> ⚠️ 隐蔽暗桩考查
+          <button id="btn-pitfalls" class="btn-action px-2.5 py-1 rounded-md text-xs flex items-center gap-1.5 transition">
+            <i data-lucide="shield-alert" class="w-3.5 h-3.5 text-[var(--accent-terracotta)]"></i> 隐蔽暗桩考查
           </button>
-          <button id="btn-drill" class="btn-action bg-amber-600/20 text-amber-300 hover:bg-amber-600/30 border border-amber-500/30 px-2.5 py-1 rounded text-xs flex items-center gap-1.5 transition">
-            <i data-lucide="help-circle" class="w-3 h-3"></i> 💡 苏格拉底考题
+          <button id="btn-drill" class="btn-action px-2.5 py-1 rounded-md text-xs flex items-center gap-1.5 transition">
+            <i data-lucide="help-circle" class="w-3.5 h-3.5 text-[var(--accent-terracotta)]"></i> 苏格拉底考题
           </button>
         </div>
 
-        <div class="flex items-center gap-2">
-          <button id="btn-copy-mentor" class="text-xs text-slate-400 hover:text-slate-200 px-2 py-1 hover:bg-slate-800 rounded border border-slate-700/60 flex items-center gap-1 transition" title="复制讲解为 Markdown">
+        <div class="flex items-center gap-1.5">
+          <button id="btn-copy-mentor" class="text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)] px-2 py-1 bg-[var(--btn-action-bg)] hover:bg-[var(--btn-action-hover)] rounded-md border border-[var(--border-app)] flex items-center gap-1 transition" title="复制讲解为 Markdown">
             <i data-lucide="copy" class="w-3.5 h-3.5"></i> 复制笔记
           </button>
-          <button id="btn-export-mentor" class="text-xs text-slate-400 hover:text-slate-200 px-2 py-1 hover:bg-slate-800 rounded border border-slate-700/60 flex items-center gap-1 transition" title="下载为 .md 本地文档">
+          <button id="btn-export-mentor" class="text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)] px-2 py-1 bg-[var(--btn-action-bg)] hover:bg-[var(--btn-action-hover)] rounded-md border border-[var(--border-app)] flex items-center gap-1 transition" title="下载为 .md 本地文档">
             <i data-lucide="download" class="w-3.5 h-3.5"></i> 导出.md
           </button>
-          <button id="btn-clear-mentor" class="text-xs text-slate-500 hover:text-slate-300 p-1 hover:bg-slate-800 rounded" title="清空导师对话">
+          <button id="btn-clear-mentor" class="text-xs text-[var(--text-muted)] hover:text-[var(--text-primary)] p-1 hover:bg-[var(--btn-action-hover)] rounded transition" title="清空导师对话">
             <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
           </button>
         </div>
       </div>
 
       <!-- 状态指示条 -->
-      <div id="mentor-status-bar" class="px-4 py-1.5 bg-slate-900 border-b border-slate-800/80 text-xs text-indigo-400 font-mono flex items-center justify-between hidden">
+      <div id="mentor-status-bar" class="px-4 py-1.5 bg-[var(--bg-header)] border-b border-[var(--border-app)] text-xs text-[var(--accent-terracotta)] font-mono flex items-center justify-between hidden">
         <span class="flex items-center gap-2">
           <i data-lucide="loader-2" class="w-3.5 h-3.5 animate-spin"></i>
           <span id="mentor-status-text">分析中...</span>
         </span>
-        <button id="btn-stop-analyze" class="text-[11px] text-rose-400 hover:underline">终止生成</button>
+        <button id="btn-stop-analyze" class="text-[11px] text-[var(--diff-del-text)] hover:underline">终止生成</button>
       </div>
 
-      <!-- P1: 导师多轮对话时间线容器 -->
+      <!-- 导师多轮对话时间线容器 -->
       <div id="mentor-chat-stream" class="flex-1 overflow-y-auto p-6 space-y-6 select-text">
-        <div id="mentor-empty-state" class="h-full flex flex-col items-center justify-center text-center p-8 text-slate-500">
-          <div class="w-12 h-12 rounded-2xl bg-indigo-500/10 flex items-center justify-center mb-3 text-indigo-400">
-            <i data-lucide="graduation-cap" class="w-6 h-6"></i>
+        <div id="mentor-empty-state" class="h-full flex flex-col items-center justify-center text-center p-8 text-[var(--text-muted)]">
+          <div class="w-12 h-12 rounded-2xl bg-[var(--btn-action-bg)] border border-[var(--border-app)] flex items-center justify-center mb-3 text-[var(--accent-terracotta)]">
+            <svg class="w-6 h-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3Z"/>
+            </svg>
           </div>
-          <h3 class="text-sm font-semibold text-slate-300">专属技术导师就绪</h3>
-          <p class="text-xs text-slate-400 max-w-sm mt-1 leading-relaxed">
+          <h3 class="text-sm font-semibold text-[var(--text-primary)]">专属技术导师就绪</h3>
+          <p class="text-xs text-[var(--text-muted)] max-w-sm mt-1.5 leading-relaxed">
             已挂载项目事实源与防噪音过滤。点击上方【快捷精读】或在下方提问。导师将结合系统全局约束深度带读，并支持连续多轮追问。
           </p>
         </div>
       </div>
 
       <!-- 底部多轮提问输入框 -->
-      <div class="p-3 border-t border-slate-800 bg-slate-900/60 shrink-0">
+      <div class="p-3.5 border-t border-[var(--border-app)] bg-[var(--bg-header)] shrink-0 transition-colors">
         <form id="mentor-form" class="flex gap-2">
-          <input type="text" id="mentor-input" placeholder="针对当前改动继续多轮追问... (例如：刚才提到的第 31 行函数，在极端高并发下如何应对？)" class="flex-1 bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-indigo-500">
-          <button type="submit" id="btn-submit-prompt" class="bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-lg text-xs font-medium flex items-center gap-1.5 transition shrink-0">
+          <input type="text" id="mentor-input" placeholder="针对当前改动继续多轮追问... (例如：刚才提到的核心函数在极端边缘场景下有何潜在缺陷？)" class="flex-1 bg-[var(--bg-input)] border border-[var(--border-app)] rounded-xl px-3.5 py-2 text-xs text-[var(--text-primary)] placeholder-[var(--text-subtle)] focus:outline-none focus:border-[var(--accent-terracotta)] transition">
+          <button type="submit" id="btn-submit-prompt" class="bg-[var(--accent-terracotta)] hover:bg-[var(--accent-terracotta-hover)] text-[#ffffff] px-4 py-2 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition shrink-0 shadow-sm">
             <i data-lucide="send" class="w-3.5 h-3.5"></i>
             追问导师
           </button>

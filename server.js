@@ -5,7 +5,7 @@ import { localAccess, RepositoryRegistry, httpError, redactKnownSecret } from '.
 import express from 'express';
 import { getKeeperStats } from './lib/keeper.js';
 import { getConfig } from './lib/config.js';
-import { buildFingerprint } from './lib/runtime.js';
+import { buildFingerprint, pickDirectory } from './lib/runtime.js';
 import { requestLifecycle } from './lib/stream.js';
 import fs from 'fs';
 import path from 'path';
@@ -21,6 +21,7 @@ const config = getConfig(options, __dirname);
 const fingerprint = buildFingerprint(__dirname);
 const PROXY_KEY = config.proxyKey;
 const fetchImpl = options.fetchImpl || fetch;
+const pickDirectoryImpl = options.pickDirectoryImpl || pickDirectory;
 
 const access = localAccess();
 const registry = new RepositoryRegistry();
@@ -140,6 +141,35 @@ app.post('/api/repos/add', async (req, res) => {
     res.json({ success: true, path: targetPath });
   } catch (err) {
     res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+app.post('/api/repos/pick', async (req, res) => {
+  const lifecycle = requestLifecycle(res, 300000);
+  try {
+    const result = await pickDirectoryImpl({ signal: lifecycle.signal });
+    if (result.canceled || !result.path) {
+      return res.json({ success: true, canceled: true });
+    }
+
+    let targetPath = path.resolve(result.path.replace(/^~/, os.homedir()));
+    if (!fs.existsSync(path.join(targetPath, '.git'))) {
+      return res.status(400).json({ success: false, error: `所选目录不是有效的 Git 仓库（未找到 .git 目录）: ${targetPath}` });
+    }
+
+    targetPath = (await registry.register(targetPath)).path;
+    const list = getWatchlist();
+    if (!list.includes(targetPath)) {
+      list.push(targetPath);
+      saveWatchlist(list);
+    }
+    scanCache = null;
+    res.json({ success: true, path: targetPath });
+  } catch (err) {
+    if (err.name === 'AbortError') return;
+    res.status(err.status || 500).json({ success: false, error: err.message, unsupported: err.status === 501 });
+  } finally {
+    lifecycle.dispose();
   }
 });
 

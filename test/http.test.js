@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import { gitFixture } from './git-helper.js';
 import { appFixture } from './http-helper.js';
 
@@ -18,6 +19,48 @@ test('HTTP selection supports unborn diff, registered IDs and JSON errors', asyn
   const malformed = await request('/api/repos/add', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{invalid' });
   assert.equal(malformed.status, 400);
   assert.match((await malformed.json()).error, /JSON/);
+});
+
+test('HTTP pick directory supports selection, cancel, non-git and unsupported platforms', async t => {
+  const { root, write } = gitFixture(t); write('README.md', '# test\n');
+  let mockResult = { canceled: false, path: root };
+  const { request } = await appFixture(t, root, {
+    pickDirectoryImpl: async () => mockResult
+  });
+
+  // 1. Successful pick of git repo
+  const okRes = await request('/api/repos/pick', { method: 'POST' });
+  assert.equal(okRes.status, 200);
+  const okData = await okRes.json();
+  assert.equal(okData.success, true);
+  assert.equal(okData.path, fs.realpathSync(root));
+
+  // 2. Canceled pick
+  mockResult = { canceled: true };
+  const cancelRes = await request('/api/repos/pick', { method: 'POST' });
+  assert.equal(cancelRes.status, 200);
+  const cancelData = await cancelRes.json();
+  assert.equal(cancelData.success, true);
+  assert.equal(cancelData.canceled, true);
+
+  // 3. Pick non-git directory
+  mockResult = { canceled: false, path: '/tmp' };
+  const nonGitRes = await request('/api/repos/pick', { method: 'POST' });
+  assert.equal(nonGitRes.status, 400);
+  const nonGitData = await nonGitRes.json();
+  assert.equal(nonGitData.success, false);
+  assert.match(nonGitData.error, /不是有效的 Git 仓库/);
+
+  // 4. Unsupported platform error
+  const unsupportedError = new Error('not supported');
+  unsupportedError.status = 501;
+  const { request: unsupportedRequest } = await appFixture(t, root, {
+    pickDirectoryImpl: async () => { throw unsupportedError; }
+  });
+  const unsuppRes = await unsupportedRequest('/api/repos/pick', { method: 'POST' });
+  assert.equal(unsuppRes.status, 501);
+  const unsuppData = await unsuppRes.json();
+  assert.equal(unsuppData.unsupported, true);
 });
 
 test('HTTP stream emits a single completion and forwards cancellation signal', async t => {

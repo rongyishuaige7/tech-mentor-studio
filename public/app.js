@@ -23,6 +23,64 @@ let currentDiffAbortController = null;
 let conversationHistory = [];
 let mentorSnapshotId = null;
 let mentorResolvedTarget = null;
+const repoSessions = new Map();
+
+const ACTION_PROMPTS = {
+  walkthrough: '请结合项目约束对当前代码进行全景架构带读，解释架构意图、核心实现与边界风险。',
+  anatomy: '请选取当前改动的核心代码，引用真实文件与行号剖析具体实现机制与权衡。',
+  pitfalls: '请深度考查当前代码的隐蔽暗桩、边界条件与防御性设计，并给出修复建议。',
+  drill: '请针对当前实现设计两道苏格拉底场景推演自测考题，并附推理过程与参考答案。'
+};
+
+function saveCurrentRepoSession() {
+  if (!activeRepo) return;
+  const chatStream = document.getElementById('mentor-chat-stream');
+  if (conversationHistory.length > 0) {
+    repoSessions.set(activeRepo.id, {
+      conversationHistory: [...conversationHistory],
+      mentorSnapshotId,
+      mentorResolvedTarget,
+      chatHtml: chatStream ? chatStream.innerHTML : null
+    });
+  }
+}
+
+function restoreRepoSession(repoId) {
+  currentAbortController?.abort();
+  currentAbortController = null;
+  document.getElementById('mentor-status-bar')?.classList.add('hidden');
+
+  const saved = repoSessions.get(repoId);
+  const chatStream = document.getElementById('mentor-chat-stream');
+  if (saved && saved.conversationHistory && saved.conversationHistory.length > 0) {
+    mentorSessionVersion++;
+    conversationHistory = [...saved.conversationHistory];
+    mentorSnapshotId = saved.mentorSnapshotId;
+    mentorResolvedTarget = saved.mentorResolvedTarget;
+    if (chatStream && saved.chatHtml) {
+      chatStream.innerHTML = saved.chatHtml;
+      lucide.createIcons();
+    }
+  } else {
+    clearMentorSession();
+  }
+}
+
+function clearCurrentMentorSession() {
+  if (activeRepo) {
+    repoSessions.delete(activeRepo.id);
+  }
+  clearMentorSession();
+}
+
+function triggerMentorAction(mode) {
+  if (conversationHistory.length === 0 || (mentorResolvedTarget && activeTarget !== mentorResolvedTarget)) {
+    startMentorAnalysis(mode, '', true);
+  } else {
+    const prompt = ACTION_PROMPTS[mode] || mode;
+    startMentorAnalysis('custom', prompt, false);
+  }
+}
 
 let localSessionPromise;
 async function apiFetch(url, options = {}) {
@@ -40,15 +98,57 @@ function renderMarkdown(text) {
   return DOMPurify.sanitize(marked.parse(text), { USE_PROFILES: { html: true }, ALLOW_DATA_ATTR: false, FORBID_TAGS: ['style', 'form', 'input', 'button', 'iframe'], FORBID_ATTR: ['style', 'id', 'name'] });
 }
 
-document.addEventListener('DOMContentLoaded', () => {
+function initTheme() {
+  let savedTheme = 'dark';
+  try {
+    savedTheme = localStorage.getItem('mentor-theme') || (window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+  } catch {}
+  applyTheme(savedTheme);
+}
+
+function applyTheme(theme) {
+  const html = document.documentElement;
+  const isDark = theme === 'dark';
+  if (isDark) {
+    html.classList.add('dark');
+  } else {
+    html.classList.remove('dark');
+  }
+  try { localStorage.setItem('mentor-theme', theme); } catch {}
+
+  const highlightLink = document.getElementById('highlight-theme');
+  if (highlightLink) {
+    highlightLink.href = isDark ? '/vendor/highlight.css' : '/vendor/highlight-light.css';
+  }
+
+  const sunIcon = document.getElementById('theme-icon-sun');
+  const moonIcon = document.getElementById('theme-icon-moon');
+  if (sunIcon && moonIcon) {
+    if (isDark) {
+      sunIcon.classList.add('hidden');
+      moonIcon.classList.remove('hidden');
+    } else {
+      sunIcon.classList.remove('hidden');
+      moonIcon.classList.add('hidden');
+    }
+  }
+
   if (window.mermaid) {
     mermaid.initialize({
       startOnLoad: false,
-      theme: 'dark',
+      theme: isDark ? 'dark' : 'neutral',
       securityLevel: 'strict'
     });
   }
+}
 
+function toggleTheme() {
+  const currentIsDark = document.documentElement.classList.contains('dark');
+  applyTheme(currentIsDark ? 'light' : 'dark');
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  initTheme();
   marked.setOptions({
     gfm: true,
     breaks: true,
@@ -145,7 +245,7 @@ async function loadKeeperStats() {
     const primaryLimit = (rateLimits || []).find(r => r.label === '5h');
     if (primaryLimit) {
       const remaining = primaryLimit.remainingPercent;
-      const color = remaining > 30 ? 'text-emerald-400' : (remaining > 10 ? 'text-amber-400' : 'text-rose-400');
+      const color = remaining > 30 ? 'text-[var(--diff-add-text)]' : (remaining > 10 ? 'text-[var(--accent-terracotta)]' : 'text-[var(--diff-del-text)]');
       parts.push(`<span class="${color}">5h: ${remaining === null ? '等待更新' : `${remaining}%`}</span>`);
     }
 
@@ -153,15 +253,15 @@ async function loadKeeperStats() {
 
     if (popoverContent) {
       let limitsHtml = (rateLimits || []).map(r => `
-        <div class="space-y-1 bg-slate-950/60 p-2 rounded border border-slate-800">
+        <div class="space-y-1 bg-[var(--bg-card)] p-2.5 rounded-lg border border-[var(--border-app)]">
           <div class="flex justify-between items-center text-[11px]">
-            <span class="font-medium text-slate-300">Codex ${escapeHtml(r.label)} 速率窗口</span>
-            <span class="font-mono ${r.remainingPercent > 30 ? 'text-emerald-400' : 'text-amber-400'}">${r.remainingPercent === null ? '等待更新 / 未知' : `剩余 ${r.remainingPercent}%`}</span>
+            <span class="font-medium text-[var(--text-primary)]">Codex ${escapeHtml(r.label)} 速率窗口</span>
+            <span class="font-mono ${r.remainingPercent > 30 ? 'text-[var(--diff-add-text)]' : 'text-[var(--accent-terracotta)]'}">${r.remainingPercent === null ? '等待更新 / 未知' : `剩余 ${r.remainingPercent}%`}</span>
           </div>
-          <div class="w-full bg-slate-800 h-1.5 rounded-full overflow-hidden">
-            <div class="h-full rounded-full ${r.remainingPercent > 30 ? 'bg-emerald-500' : 'bg-amber-500'}" style="width: ${Number(r.remainingPercent) || 0}%"></div>
+          <div class="w-full bg-[var(--progress-track)] h-1.5 rounded-full overflow-hidden">
+            <div class="h-full rounded-full ${r.remainingPercent > 30 ? 'bg-[var(--diff-add-text)]' : 'bg-[var(--accent-terracotta)]'}" style="width: ${Number(r.remainingPercent) || 0}%"></div>
           </div>
-          <div class="text-[10px] text-slate-500 flex justify-between">
+          <div class="text-[10px] text-[var(--text-subtle)] flex justify-between">
             <span>重置时间: ${r.resetAt ? new Date(r.resetAt).toLocaleString() : '未知'}</span>
           </div>
         </div>
@@ -169,15 +269,15 @@ async function loadKeeperStats() {
 
       let statsHtml = `
         <div class="grid grid-cols-2 gap-2 text-[11px]">
-          <div class="bg-slate-950/60 p-2 rounded border border-slate-800">
-            <div class="text-slate-400 text-[10px]">今日 Antigravity (AGY)</div>
-            <div class="font-mono font-semibold text-indigo-300 text-xs mt-0.5">${formatK(stats.antigravity?.tokens || 0)} tokens</div>
-            <div class="text-[10px] text-slate-500">${stats.antigravity?.requests || 0} 次请求</div>
+          <div class="bg-[var(--bg-card)] p-2.5 rounded-lg border border-[var(--border-app)]">
+            <div class="text-[var(--text-muted)] text-[10px]">今日 Antigravity (AGY)</div>
+            <div class="font-mono font-semibold text-[var(--accent-terracotta)] text-xs mt-0.5">${formatK(stats.antigravity?.tokens || 0)} tokens</div>
+            <div class="text-[10px] text-[var(--text-subtle)]">${stats.antigravity?.requests || 0} 次请求</div>
           </div>
-          <div class="bg-slate-950/60 p-2 rounded border border-slate-800">
-            <div class="text-slate-400 text-[10px]">今日 Codex / OpenAI</div>
-            <div class="font-mono font-semibold text-emerald-300 text-xs mt-0.5">${formatK(stats.codex?.tokens || 0)} tokens</div>
-            <div class="text-[10px] text-slate-500">${stats.codex?.requests || 0} 次请求</div>
+          <div class="bg-[var(--bg-card)] p-2.5 rounded-lg border border-[var(--border-app)]">
+            <div class="text-[var(--text-muted)] text-[10px]">今日 Codex / OpenAI</div>
+            <div class="font-mono font-semibold text-[var(--diff-add-text)] text-xs mt-0.5">${formatK(stats.codex?.tokens || 0)} tokens</div>
+            <div class="text-[10px] text-[var(--text-subtle)]">${stats.codex?.requests || 0} 次请求</div>
           </div>
         </div>
       `;
@@ -199,10 +299,10 @@ function renderCommitPresets(presets) {
   }
   container.innerHTML = presets.map(p => `
     <button data-action="target" data-value="${escapeHtml(p.hash)}"
-            class="px-1.5 py-0.5 rounded text-[10px] font-mono transition border ${
-              activeTarget === p.hash 
-                ? 'bg-indigo-600 border-indigo-500 text-white font-medium' 
-                : 'bg-slate-800 border-slate-700/60 text-slate-400 hover:text-slate-200 hover:bg-slate-700/60'
+            class="px-2 py-0.5 rounded text-[10px] font-mono transition border ${
+              activeTarget === p.hash
+                ? 'bg-[var(--accent-terracotta)] border-[var(--accent-terracotta)] text-[#ffffff] font-semibold'
+                : 'bg-[var(--btn-action-bg)] border-[var(--border-app)] text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--btn-action-hover)]'
             }" title="${escapeHtml(p.msg)}">
       ${escapeHtml(p.shortHash)}
     </button>
@@ -210,7 +310,25 @@ function renderCommitPresets(presets) {
 }
 
 function setupEventListeners() {
-  document.addEventListener('click', event => {
+  document.addEventListener('click', async event => {
+    const copyBtn = event.target.closest('.copy-code-btn');
+    if (copyBtn) {
+      const wrapper = copyBtn.closest('.code-block-wrapper');
+      const code = wrapper?.querySelector('pre code');
+      if (code) {
+        try {
+          await navigator.clipboard.writeText(code.innerText || code.textContent);
+          copyBtn.innerHTML = '<i data-lucide="check" class="w-3 h-3 text-[var(--diff-add-text)]"></i> 已复制';
+          lucide.createIcons();
+          setTimeout(() => {
+            copyBtn.innerHTML = '<i data-lucide="copy" class="w-3 h-3"></i> 复制代码';
+            lucide.createIcons();
+          }, 2000);
+        } catch {}
+      }
+      return;
+    }
+
     const button = event.target.closest('[data-action]');
     if (!button) return;
     const value = button.dataset.value;
@@ -225,10 +343,12 @@ function setupEventListeners() {
     }
   });
   document.getElementById('btn-refresh').addEventListener('click', () => loadRepos(true));
+  document.getElementById('btn-theme-toggle')?.addEventListener('click', toggleTheme);
   document.getElementById('btn-retry-models').addEventListener('click', loadModels);
   document.getElementById('model-select').addEventListener('change', event => { try { localStorage.setItem('mentor-model', event.target.value); } catch {} });
   document.getElementById('repo-search').addEventListener('input', handleRepoFilter);
   document.getElementById('btn-add-repo').addEventListener('click', handleAddRepo);
+  document.getElementById('btn-add-repo-manual')?.addEventListener('click', handleAddRepoManual);
 
   // CPA 详情浮窗控制
   const keeperPill = document.getElementById('keeper-token-pill');
@@ -245,11 +365,11 @@ function setupEventListeners() {
     });
   }
 
-  // 快捷动作按钮 (启动全新专项精读)
-  document.getElementById('btn-walkthrough').addEventListener('click', () => startMentorAnalysis('walkthrough', '', true));
-  document.getElementById('btn-anatomy').addEventListener('click', () => startMentorAnalysis('anatomy', '', true));
-  document.getElementById('btn-pitfalls').addEventListener('click', () => startMentorAnalysis('pitfalls', '', true));
-  document.getElementById('btn-drill').addEventListener('click', () => startMentorAnalysis('drill', '', true));
+  // 快捷动作按钮 (未开始或切目标时启动精读，已有对话时作为追问深入)
+  document.getElementById('btn-walkthrough').addEventListener('click', () => triggerMentorAction('walkthrough'));
+  document.getElementById('btn-anatomy').addEventListener('click', () => triggerMentorAction('anatomy'));
+  document.getElementById('btn-pitfalls').addEventListener('click', () => triggerMentorAction('pitfalls'));
+  document.getElementById('btn-drill').addEventListener('click', () => triggerMentorAction('drill'));
 
   // 底部多轮追问表单提交
   document.getElementById('mentor-form').addEventListener('submit', (e) => {
@@ -265,7 +385,7 @@ function setupEventListeners() {
   document.getElementById('btn-stop-analyze').addEventListener('click', stopMentorAnalysis);
 
   // 清空多轮对话
-  document.getElementById('btn-clear-mentor').addEventListener('click', clearMentorSession);
+  document.getElementById('btn-clear-mentor').addEventListener('click', clearCurrentMentorSession);
 
   // 复制笔记
   document.getElementById('btn-copy-mentor').addEventListener('click', copyMentorNotes);
@@ -326,26 +446,26 @@ function renderRepoList(repos) {
     return `
       <div data-action="repo" data-value="${escapeHtml(repo.id)}"
            class="p-2.5 rounded-lg cursor-pointer transition flex flex-col gap-1 border ${
-             isSelected 
-               ? 'bg-indigo-600/15 border-indigo-500/40 text-white' 
-               : 'bg-slate-900/40 border-slate-800/40 hover:bg-slate-800/60 text-slate-300'
+             isSelected
+               ? 'bg-[var(--bg-surface-hover)] border-[var(--accent-terracotta)] text-[var(--text-primary)]'
+               : 'bg-[var(--bg-card)] border-[var(--border-subtle)] hover:bg-[var(--bg-card-hover)] text-[var(--text-secondary)]'
            }">
         <div class="flex items-center justify-between">
           <span class="repo-name font-medium text-xs truncate flex items-center gap-1.5">
-            <i data-lucide="folder-git-2" class="w-3.5 h-3.5 ${isSelected ? 'text-indigo-400' : 'text-slate-500'}"></i>
+            <i data-lucide="folder-git-2" class="w-3.5 h-3.5 ${isSelected ? 'text-[var(--accent-terracotta)]' : 'text-[var(--text-muted)]'}"></i>
             <span class="truncate">${escapeHtml(repo.name)}</span>
           </span>
-          ${hasDirty 
-            ? `<span class="text-[10px] px-1.5 py-0.2 rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/30 font-mono font-medium shrink-0">⚡ ${repo.dirtyCount} 变动</span>`
-            : `<span class="text-[10px] text-slate-500 font-mono">${escapeHtml(repo.branch)}</span>`
+          ${hasDirty
+            ? `<span class="text-[10px] px-2 py-0.2 rounded-full bg-[var(--accent-terracotta-bg)] text-[var(--accent-terracotta)] border border-[var(--accent-terracotta-border)] font-mono font-medium shrink-0">${repo.dirtyCount} 变动</span>`
+            : `<span class="text-[10px] text-[var(--text-subtle)] font-mono">${escapeHtml(repo.branch)}</span>`
           }
         </div>
-        ${repo.error ? `<div class="text-[11px] text-rose-400">读取失败: ${escapeHtml(repo.error)}</div>` : ''}
+        ${repo.error ? `<div class="text-[11px] text-[var(--diff-del-text)]">读取失败: ${escapeHtml(repo.error)}</div>` : ''}
         ${repo.lastCommit ? `
-          <div class="text-[11px] text-slate-400 truncate mt-0.5">
+          <div class="text-[11px] text-[var(--text-muted)] truncate mt-0.5">
             ${escapeHtml(repo.lastCommit.msg)}
           </div>
-          <div class="text-[10px] text-slate-500 flex items-center justify-between mt-0.5">
+          <div class="text-[10px] text-[var(--text-subtle)] flex items-center justify-between mt-0.5 font-mono">
             <span>${escapeHtml(repo.lastCommit.author)}</span>
             <span>${escapeHtml(repo.lastCommit.time)}</span>
           </div>
@@ -364,8 +484,8 @@ window.selectRepoById = (id) => {
 
 function handleRepoFilter(e) {
   const q = e.target.value.toLowerCase().trim();
-  const filtered = allRepos.filter(r => 
-    r.name.toLowerCase().includes(q) || 
+  const filtered = allRepos.filter(r =>
+    r.name.toLowerCase().includes(q) ||
     r.path.toLowerCase().includes(q) ||
     (r.lastCommit && r.lastCommit.msg.toLowerCase().includes(q))
   );
@@ -373,6 +493,45 @@ function handleRepoFilter(e) {
 }
 
 async function handleAddRepo() {
+  const addBtn = document.getElementById('btn-add-repo');
+  const originalHtml = addBtn ? addBtn.innerHTML : '';
+  if (addBtn) {
+    addBtn.disabled = true;
+    addBtn.innerHTML = '<i data-lucide="loader-2" class="w-3.5 h-3.5 animate-spin"></i> 选择中…';
+    lucide.createIcons();
+  }
+
+  try {
+    const res = await apiFetch('/api/repos/pick', { method: 'POST' });
+    const data = await res.json();
+    if (data.canceled) return;
+    if (!res.ok || !data.success) {
+      if (data.unsupported) {
+        return handleAddRepoManual();
+      }
+      throw new Error(data.error || '添加项目失败');
+    }
+
+    await loadRepos();
+    const added = allRepos.find(r => r.path === data.path);
+    if (added) {
+      selectRepo(added);
+    }
+  } catch (err) {
+    const fallback = confirm(`启动系统目录选择器失败 (${err.message})。\n\n是否切换为手动输入路径？`);
+    if (fallback) {
+      handleAddRepoManual();
+    }
+  } finally {
+    if (addBtn) {
+      addBtn.disabled = false;
+      addBtn.innerHTML = originalHtml;
+      lucide.createIcons();
+    }
+  }
+}
+
+async function handleAddRepoManual() {
   const targetPath = prompt('请输入本地 Git 项目的绝对路径 (支持 ~ 代表主目录):');
   if (!targetPath) return;
 
@@ -385,6 +544,10 @@ async function handleAddRepo() {
     const data = await res.json();
     if (!data.success) throw new Error(data.error);
     await loadRepos();
+    const added = allRepos.find(r => r.path === data.path);
+    if (added) {
+      selectRepo(added);
+    }
   } catch (err) {
     alert(`添加失败: ${err.message}`);
   }
@@ -392,6 +555,7 @@ async function handleAddRepo() {
 
 // 2. 选择仓库并加载提交记录
 async function selectRepo(repo) {
+  saveCurrentRepoSession();
   showPanel('diff');
   currentCommits = [];
   currentPresets = [];
@@ -405,7 +569,7 @@ async function selectRepo(repo) {
   activeTarget = 'working-tree';
   activeRepo = repo;
   currentFocusFile = null;
-  clearMentorSession();
+  restoreRepoSession(repo.id);
   handleRepoFilter({ target: document.getElementById('repo-search') });
 
   document.getElementById('active-repo-name').textContent = repo.name;
@@ -458,22 +622,22 @@ function renderCommitList(commits) {
     return `
       <div data-action="target" data-value="${escapeHtml(c.hash)}"
            class="p-2 px-3 cursor-pointer transition flex items-center justify-between border-l-2 ${
-             isSelected 
-               ? 'bg-indigo-600/20 border-indigo-500 text-white font-medium' 
-               : isWorkingTree 
-                 ? 'bg-amber-500/10 border-amber-500/60 text-amber-200 hover:bg-amber-500/15'
-                 : 'border-transparent text-slate-300 hover:bg-slate-800/40'
+             isSelected
+               ? 'bg-[var(--bg-surface-hover)] border-[var(--accent-terracotta)] text-[var(--text-primary)] font-medium'
+               : isWorkingTree
+                 ? 'bg-[var(--accent-terracotta-bg)] border-[var(--accent-terracotta)] text-[var(--accent-terracotta)] hover:bg-[var(--accent-terracotta-bg)]'
+                 : 'border-transparent text-[var(--text-secondary)] hover:bg-[var(--bg-surface-hover)]'
            }">
         <div class="truncate mr-2">
           <div class="text-xs truncate flex items-center gap-1.5">
-            ${isWorkingTree ? '<span class="text-amber-400">⚡</span>' : ''}
+            ${isWorkingTree ? '<i data-lucide="edit-3" class="w-3 h-3 text-[var(--accent-terracotta)] shrink-0"></i>' : ''}
             ${escapeHtml(c.msg)}
           </div>
-          <div class="text-[10px] text-slate-500 mt-0.5 font-mono">
+          <div class="text-[10px] text-[var(--text-subtle)] mt-0.5 font-mono">
             <span>${escapeHtml(c.author)}</span> · <span>${escapeHtml(c.relTime)}</span>
           </div>
         </div>
-        <span class="text-[10px] font-mono shrink-0 px-1 py-0.2 rounded bg-slate-800 text-slate-400">
+        <span class="text-[10px] font-mono shrink-0 px-1.5 py-0.2 rounded bg-[var(--btn-action-bg)] border border-[var(--border-app)] text-[var(--text-muted)]">
           ${escapeHtml(c.shortHash)}
         </span>
       </div>
@@ -486,7 +650,6 @@ window.selectTarget = (targetHash) => {
   renderCommitPresets(currentPresets);
   renderCommitList(currentCommits);
   currentFocusFile = null;
-  clearMentorSession();
   if (activeRepo) {
     fetchDiff(activeRepo.id, targetHash);
   }
@@ -505,8 +668,8 @@ async function fetchDiff(repoId, target) {
   const diffEl = document.getElementById('diff-content');
   diffEl.innerHTML = '<div class="p-4 text-slate-500 font-mono text-xs">正在生成差异对比...</div>';
 
-  document.getElementById('diff-target-label').textContent = 
-    target === 'working-tree' ? '当前未提交变动 (Working Tree)' : 
+  document.getElementById('diff-target-label').textContent =
+    target === 'working-tree' ? '当前未提交变动 (Working Tree)' :
     target.startsWith('range:') ? `聚合区间 ${target.slice(6)}` :
     target.includes('..') ? `区间对比 ${target}` :
     `提交 ${target.slice(0, 8)}`;
@@ -538,18 +701,18 @@ async function fetchDiff(repoId, target) {
     if (!data.diffText || data.diffText.trim() === '') {
       if (data.isCleanWorkingTree && data.fallbackHead) {
         diffEl.innerHTML = `
-          <div class="p-8 text-center text-slate-400 space-y-3 bg-slate-900/40 rounded-xl border border-slate-800 m-4">
-            <div class="w-10 h-10 rounded-full bg-emerald-500/10 text-emerald-400 flex items-center justify-center mx-auto">
-              <i data-lucide="check-circle-2" class="w-5 h-5"></i>
+          <div class="p-8 text-center text-[var(--text-muted)] space-y-3 bg-[var(--bg-card)] rounded-xl border border-[var(--border-app)] m-4 shadow-sm">
+            <div class="w-10 h-10 rounded-full bg-[var(--diff-add-bg)] text-[var(--diff-add-text)] flex items-center justify-center mx-auto">
+              <i data-lucide="check" class="w-5 h-5"></i>
             </div>
-            <div class="text-emerald-400 text-sm font-semibold">✨ 当前工作区已全部提交 (工作区干净)</div>
-            <p class="text-xs text-slate-400 max-w-sm mx-auto leading-relaxed">
+            <div class="text-[var(--text-primary)] text-sm font-medium">当前工作区已全部提交 (工作区干净)</div>
+            <p class="text-xs text-[var(--text-muted)] max-w-sm mx-auto leading-relaxed">
               没有未暂存的代码改动。可直接查看最新提交 [${data.fallbackHead.shortHash}]，或点击上方快捷带读让导师剖析最新提交。
             </p>
             <div class="pt-2">
-              <button data-action="target" data-value="${escapeHtml(data.fallbackHead.hash)}" class="px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-medium transition shadow shadow-indigo-600/30 flex items-center gap-1.5 mx-auto">
+              <button data-action="target" data-value="${escapeHtml(data.fallbackHead.hash)}" class="px-3.5 py-1.5 bg-[var(--accent-terracotta)] hover:bg-[var(--accent-terracotta-hover)] text-[#ffffff] rounded-lg text-xs font-semibold transition flex items-center gap-1.5 mx-auto shadow-sm">
                 <i data-lucide="git-commit" class="w-3.5 h-3.5"></i>
-                一键查看最新提交 [${data.fallbackHead.shortHash}]
+                查看最新提交 [${data.fallbackHead.shortHash}]
               </button>
             </div>
           </div>
@@ -557,11 +720,11 @@ async function fetchDiff(repoId, target) {
         lucide.createIcons();
       } else {
         diffEl.innerHTML = `
-          <div class="p-6 text-center text-slate-500 space-y-2">
-            <div class="text-amber-400 text-sm font-medium">✨ 当前目标没有检测到代码差异</div>
-            <p class="text-xs text-slate-400 max-w-xs mx-auto leading-relaxed">
-              ${target === 'working-tree' 
-                ? '当前工作区干净，无未提交变动。请在上方选择一条历史提交 (Commit) 查看！' 
+          <div class="p-6 text-center text-[var(--text-subtle)] space-y-2">
+            <div class="text-[var(--text-primary)] text-sm font-medium">当前目标没有检测到代码差异</div>
+            <p class="text-xs text-[var(--text-muted)] max-w-xs mx-auto leading-relaxed">
+              ${target === 'working-tree'
+                ? '当前工作区干净，无未提交变动。请在上方选择一条历史提交 (Commit) 查看。'
                 : '该提交没有文本文件变动或为无修改合并。请选择其他提交查看。'}
             </p>
           </div>
@@ -587,10 +750,10 @@ function renderFileFilterChips(files) {
 
   const allActive = currentFocusFile === null;
   let html = `
-    <span class="text-slate-500 text-[10px]">变动文件:</span>
+    <span class="text-[var(--text-subtle)] text-[10px]">变动文件:</span>
     <button data-action="focus-all"
             class="px-2 py-0.5 rounded text-[10px] font-mono transition shrink-0 ${
-              allActive ? 'bg-indigo-600 text-white font-medium' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
+              allActive ? 'bg-[var(--accent-terracotta)] text-[#ffffff] font-semibold' : 'bg-[var(--btn-action-bg)] border border-[var(--border-app)] text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--btn-action-hover)]'
             }">
       全部文件 (${files.length})
     </button>
@@ -605,15 +768,15 @@ function renderFileFilterChips(files) {
       <button data-action="focus" data-value="${escapeHtml(f.path)}"
               title="${escapeHtml(f.path)}"
               class="px-2 py-0.5 rounded text-[10px] font-mono transition shrink-0 flex items-center gap-1 ${
-                isActive 
-                  ? 'bg-indigo-600 text-white font-medium shadow-sm' 
+                isActive
+                  ? 'bg-[var(--accent-terracotta)] text-[#ffffff] font-semibold shadow-sm'
                   : isNoise
-                    ? 'bg-slate-900 text-slate-500 border border-slate-800 hover:bg-slate-800'
-                    : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+                    ? 'bg-[var(--bg-input)] text-[var(--text-subtle)] border border-[var(--border-app)] hover:bg-[var(--btn-action-hover)]'
+                    : 'bg-[var(--btn-action-bg)] border border-[var(--border-app)] text-[var(--text-secondary)] hover:bg-[var(--btn-action-hover)]'
               }">
         <span class="truncate max-w-[120px]">${escapeHtml(baseName)}</span>
-        <span class="text-[9px] text-emerald-400">+${f.additions}</span>
-        <span class="text-[9px] text-rose-400">-${f.deletions}</span>
+        <span class="text-[9px] text-[var(--diff-add-text)]">+${f.additions}</span>
+        <span class="text-[9px] text-[var(--diff-del-text)]">-${f.deletions}</span>
       </button>
     `;
   }).join('');
@@ -745,9 +908,9 @@ async function startMentorAnalysis(mode, customPrompt = '', resetSession = false
     const userBubble = document.createElement('div');
     userBubble.className = 'flex justify-end';
     userBubble.innerHTML = `
-      <div class="bg-indigo-600/20 border border-indigo-500/40 rounded-xl rounded-tr-none px-4 py-2.5 max-w-xl text-xs text-indigo-100 shadow-sm leading-relaxed">
-        <div class="font-semibold text-indigo-300 text-[11px] mb-1 flex items-center gap-1 justify-end">
-          <span>你</span> <i data-lucide="user" class="w-3 h-3"></i>
+      <div class="bg-[var(--bg-bubble-user)] border border-[var(--border-user-bubble)] rounded-2xl rounded-tr-sm px-4 py-2.5 max-w-xl text-xs text-[var(--text-primary)] shadow-sm leading-relaxed">
+        <div class="font-medium text-[var(--text-muted)] text-[11px] mb-1 flex items-center gap-1 justify-end">
+          <span>你</span> <i data-lucide="user" class="w-3 h-3 text-[var(--text-muted)]"></i>
         </div>
         <div>${escapeHtml(customPrompt)}</div>
       </div>
@@ -762,17 +925,19 @@ async function startMentorAnalysis(mode, customPrompt = '', resetSession = false
   assistantBubble.className = 'flex justify-start';
   const bubbleId = `bubble-${sessionVersion}-${requestId}`;
   assistantBubble.innerHTML = `
-    <div class="bg-slate-900/80 border border-slate-800 rounded-xl rounded-tl-none p-5 max-w-none w-full shadow-lg">
-      <div class="flex items-center justify-between pb-2 mb-3 border-b border-slate-800/80">
-        <span class="text-xs font-semibold text-indigo-300 flex items-center gap-1.5 font-mono">
-          <i data-lucide="compass" class="w-3.5 h-3.5 text-indigo-400"></i>
+    <div class="bg-[var(--bg-bubble-assistant)] border border-[var(--border-assistant-bubble)] rounded-2xl rounded-tl-sm p-5 max-w-none w-full shadow-sm">
+      <div class="flex items-center justify-between pb-2 mb-3 border-b border-[var(--border-app)]">
+        <span class="text-xs font-semibold text-[var(--accent-terracotta)] flex items-center gap-1.5 font-mono">
+          <svg class="w-3.5 h-3.5 text-[var(--accent-terracotta)]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3Z"/>
+          </svg>
           Tech Mentor (${escapeHtml(modelSelect.options[modelSelect.selectedIndex]?.text?.split(' ')[0] || 'AI')})
-          ${currentFocusFile ? `<span class="text-[10px] px-1.5 py-0.2 rounded bg-indigo-500/20 text-indigo-300">聚焦: ${escapeHtml(currentFocusFile.split('/').pop())}</span>` : ''}
+          ${currentFocusFile ? `<span class="text-[10px] px-2 py-0.5 rounded-full bg-[var(--accent-terracotta-bg)] text-[var(--accent-terracotta)] border border-[var(--accent-terracotta-border)]">聚焦: ${escapeHtml(currentFocusFile.split('/').pop())}</span>` : ''}
         </span>
-        <span class="text-[10px] text-slate-500 font-mono">${new Date().toLocaleTimeString()}</span>
+        <span class="text-[10px] text-[var(--text-subtle)] font-mono">${new Date().toLocaleTimeString()}</span>
       </div>
-      <article id="${bubbleId}" class="mentor-prose prose prose-invert prose-slate max-w-none text-slate-200 text-sm leading-relaxed">
-        <div class="text-slate-500 animate-pulse text-xs">导师正在推演系统逻辑与代码流向...</div>
+      <article id="${bubbleId}" class="mentor-prose prose max-w-none text-[var(--text-primary)] text-sm leading-relaxed">
+        <div class="text-[var(--text-muted)] animate-pulse text-xs">导师正在推演系统逻辑与代码流向...</div>
       </article>
       <div id="footer-${bubbleId}"></div>
     </div>
@@ -797,7 +962,7 @@ async function startMentorAnalysis(mode, customPrompt = '', resetSession = false
 
   const payload = {
     repoPath: activeRepo.path,
-    target: activeTarget,
+    target: mentorSnapshotId ? (mentorResolvedTarget || activeTarget) : activeTarget,
     mode,
     customPrompt,
     focusFile: currentFocusFile,
@@ -871,6 +1036,7 @@ async function startMentorAnalysis(mode, customPrompt = '', resetSession = false
             if (footerEl) renderQuickChips(footerEl);
             loadKeeperStats();
             statusBar.classList.add('hidden');
+            saveCurrentRepoSession();
           }
         }
       }
@@ -906,22 +1072,22 @@ async function startMentorAnalysis(mode, customPrompt = '', resetSession = false
 // 快速追问胶囊生成
 function renderQuickChips(container) {
   const chipsWrapper = document.createElement('div');
-  chipsWrapper.className = 'mt-4 pt-3 border-t border-slate-800/80 flex flex-wrap items-center gap-2 text-xs';
+  chipsWrapper.className = 'mt-5 pt-3.5 border-t border-[var(--border-app)] flex flex-wrap items-center gap-2 text-xs';
   chipsWrapper.innerHTML = `
-    <span class="text-slate-500 text-[10px] mr-1 flex items-center gap-1">
-      <i data-lucide="zap" class="w-3 h-3 text-amber-400"></i> 快速深入:
+    <span class="text-[var(--text-subtle)] text-[10px] mr-1 flex items-center gap-1 font-mono">
+      <i data-lucide="sparkles" class="w-3 h-3 text-[var(--accent-terracotta)]"></i> 快速追问:
     </span>
     <button class="quick-chip" data-action="ask" data-value="请深度展开刚才提出的苏格拉底考题，给出详细推演思路与参考答案">
-      💡 展开自测题推演
+      <i data-lucide="chevron-right" class="w-3 h-3 text-[var(--accent-terracotta)]"></i> 展开自测考题推演与答案
     </button>
     <button class="quick-chip" data-action="ask" data-value="针对本次分析指出的隐蔽暗桩，请给出具体的防御性重构代码">
-      ⚠️ 给出暗坑防御代码
+      <i data-lucide="chevron-right" class="w-3 h-3 text-[var(--accent-terracotta)]"></i> 针对隐蔽暗桩给出防御代码
     </button>
     <button class="quick-chip" data-action="ask" data-value="请使用 Mermaid sequenceDiagram 时序图画出最核心的调用链路与异常分支">
-      📐 绘制时序图
+      <i data-lucide="chevron-right" class="w-3 h-3 text-[var(--accent-terracotta)]"></i> 绘制核心时序图 (Mermaid)
     </button>
     <button class="quick-chip" data-action="ask" data-value="如果在高并发和极端边缘场景下运行，这段代码有什么潜在瓶颈？">
-      🚀 极限性能与并发剖析
+      <i data-lucide="chevron-right" class="w-3 h-3 text-[var(--accent-terracotta)]"></i> 高并发与极端场景瓶颈
     </button>
   `;
   container.appendChild(chipsWrapper);
@@ -953,12 +1119,14 @@ function clearMentorSession() {
   mentorResolvedTarget = null;
   const chatStream = document.getElementById('mentor-chat-stream');
   chatStream.innerHTML = `
-    <div id="mentor-empty-state" class="h-full flex flex-col items-center justify-center text-center p-8 text-slate-500">
-      <div class="w-12 h-12 rounded-2xl bg-indigo-500/10 flex items-center justify-center mb-3 text-indigo-400">
-        <i data-lucide="graduation-cap" class="w-6 h-6"></i>
+    <div id="mentor-empty-state" class="h-full flex flex-col items-center justify-center text-center p-8 text-[var(--text-muted)]">
+      <div class="w-12 h-12 rounded-2xl bg-[var(--btn-action-bg)] border border-[var(--border-app)] flex items-center justify-center mb-3 text-[var(--accent-terracotta)]">
+        <svg class="w-6 h-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3Z"/>
+        </svg>
       </div>
-      <h3 class="text-sm font-semibold text-slate-300">专属技术导师就绪</h3>
-      <p class="text-xs text-slate-400 max-w-sm mt-1 leading-relaxed">
+      <h3 class="text-sm font-semibold text-[var(--text-primary)]">专属技术导师就绪</h3>
+      <p class="text-xs text-[var(--text-muted)] max-w-sm mt-1 leading-relaxed">
         已挂载项目事实源与防噪音过滤。点击上方【快捷精读】或在下方提问。导师将结合系统全局约束深度带读，并支持连续多轮追问。
       </p>
     </div>

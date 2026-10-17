@@ -12,7 +12,8 @@ const assets = {
   'dompurify/dist/purify.min.js': 'purify.js',
   'marked/lib/marked.umd.js': 'marked.js',
   'lucide/dist/umd/lucide.min.js': 'lucide.js',
-  'highlight.js/styles/github-dark.min.css': 'highlight.css'
+  'highlight.js/styles/github-dark.min.css': 'highlight.css',
+  'highlight.js/styles/github.min.css': 'highlight-light.css'
 };
 for (const [source, name] of Object.entries(assets)) {
   fs.copyFileSync(path.join(root, 'node_modules', source), path.join(vendor, name));
