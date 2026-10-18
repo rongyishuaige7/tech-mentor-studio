@@ -22,6 +22,16 @@ const fingerprint = buildFingerprint(__dirname);
 const PROXY_KEY = config.proxyKey;
 const fetchImpl = options.fetchImpl || fetch;
 const pickDirectoryImpl = options.pickDirectoryImpl || pickDirectory;
+const pickTimeout = options.pickTimeoutMs || 300000;
+
+// A lifecycle timeout surfaces as AbortError; answer it instead of leaving the
+// request pending. A disconnected client has no one left to answer.
+function sendFailure(res, error, lifecycle, extra = {}) {
+  if (res.headersSent || res.destroyed) return;
+  const timedOut = error.name === 'AbortError' && lifecycle.signal.aborted;
+  res.status(timedOut ? 504 : error.status || 500)
+    .json({ success: false, error: timedOut ? lifecycle.signal.reason.message : error.message, ...extra });
+}
 
 const access = localAccess();
 const registry = new RepositoryRegistry();
@@ -150,7 +160,7 @@ app.post('/api/repos/add', async (req, res) => {
 });
 
 app.post('/api/repos/pick', async (req, res) => {
-  const lifecycle = requestLifecycle(res, 300000);
+  const lifecycle = requestLifecycle(res, pickTimeout, '目录选择超时，请重新选择');
   try {
     const result = await pickDirectoryImpl({ signal: lifecycle.signal });
     if (result.canceled || !result.path) {
@@ -171,8 +181,7 @@ app.post('/api/repos/pick', async (req, res) => {
     scanCache = null;
     res.json({ success: true, path: targetPath });
   } catch (err) {
-    if (err.name === 'AbortError') return;
-    res.status(err.status || 500).json({ success: false, error: err.message, unsupported: err.status === 501 });
+    sendFailure(res, err, lifecycle, { unsupported: err.status === 501 });
   } finally {
     lifecycle.dispose();
   }
@@ -184,7 +193,7 @@ app.get('/api/tokens/keeper-stats', async (req, res) => {
 });
 
 app.get('/api/repos/:repoId/commits', async (req, res) => {
-  const lifecycle = requestLifecycle(res, 45000);
+  const lifecycle = requestLifecycle(res, 45000, '读取提交记录超时，请重试');
   try {
     const repoPath = registry.resolve(req.params.repoId);
     const options = { signal: lifecycle.signal };
@@ -193,18 +202,18 @@ app.get('/api/repos/:repoId/commits', async (req, res) => {
       msg: `当前未提交改动 (${status.length} 个文件)`, author: 'You', relTime: 'Just now',
       isWorkingTree: true, fileCount: status.length });
     res.json(redactKnownSecret({ success: true, commits, presets, repoPath, dirtyCount: status.length }, config.proxyKey));
-  } catch (error) { res.status(error.status || 500).json({ success: false, error: error.message }); }
+  } catch (error) { sendFailure(res, error, lifecycle); }
   finally { lifecycle.dispose(); }
 });
 
 app.get('/api/repos/:repoId/diff', async (req, res) => {
-  const lifecycle = requestLifecycle(res, 45000);
+  const lifecycle = requestLifecycle(res, 45000, '生成 Diff 超时，请缩小选择范围');
   try {
     const repoPath = registry.resolve(req.params.repoId);
     const options = { signal: lifecycle.signal };
     const data = await loadDiff(repoPath, req.query.target || 'working-tree', options);
     res.json(redactKnownSecret({ ...data, repoPath, hasFacts: await hasProjectFacts(repoPath, data, options) }, config.proxyKey));
-  } catch (error) { res.status(error.status || 500).json({ success: false, error: error.message }); }
+  } catch (error) { sendFailure(res, error, lifecycle); }
   finally { lifecycle.dispose(); }
 });
 

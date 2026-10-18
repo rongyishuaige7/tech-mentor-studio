@@ -119,3 +119,13 @@ test('configured credentials are redacted from repository and commit metadata', 
   assert.equal(JSON.stringify(commits).includes('fixture-only'), false);
   assert.match(JSON.stringify(commits), /REDACTED/);
 });
+
+test('a directory picker that times out answers 504 instead of hanging', async t => {
+  const { root } = gitFixture(t);
+  const { request } = await appFixture(t, root, { pickTimeoutMs: 50, pickDirectoryImpl: ({ signal }) => new Promise((resolve, reject) => {
+    signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')));
+  }) });
+  const response = await request('/api/repos/pick', { method: 'POST' });
+  assert.equal(response.status, 504);
+  assert.match((await response.json()).error, /目录选择超时/);
+});
