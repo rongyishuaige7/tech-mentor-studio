@@ -26,12 +26,32 @@ let mentorResolvedTarget = null;
 let mentorRequestedTarget = null;
 const repoSessions = new Map();
 
-const ACTION_PROMPTS = {
-  walkthrough: '请结合项目约束对当前代码进行全景架构带读，解释架构意图、核心实现与边界风险。',
-  anatomy: '请选取当前改动的核心代码，引用真实文件与行号剖析具体实现机制与权衡。',
-  pitfalls: '请深度考查当前代码的隐蔽暗桩、边界条件与防御性设计，并给出修复建议。',
-  drill: '请针对当前实现设计两道苏格拉底场景推演自测考题，并附推理过程与参考答案。'
+// Instructions for these actions live on the server (lib/mentor.js MODES); the
+// labels only name the user's turn in the conversation.
+const ACTION_LABELS = {
+  walkthrough: '全景架构带读',
+  anatomy: '核心代码实相',
+  pitfalls: '隐蔽暗桩考查',
+  drill: '苏格拉底考题'
 };
+// The server only gives the model this much history (HISTORY_BUDGET in
+// lib/mentor.js). Send just that tail; the full history stays here for export.
+const HISTORY_BUDGET = 24000;
+
+function historyForRequest(history) {
+  const groups = [];
+  for (let i = 0; i < history.length;) {
+    if (history[i].role === 'assistant') groups.push([history[i++]]);
+    else groups.push([history[i++], history[i++]]);
+  }
+  let used = 0; const kept = [];
+  for (let i = groups.length - 1; i >= 0; i--) {
+    const size = groups[i].reduce((sum, turn) => sum + turn.content.length, 0);
+    if (used + size > HISTORY_BUDGET) break;
+    kept.unshift(...groups[i]); used += size;
+  }
+  return kept;
+}
 
 function saveCurrentRepoSession() {
   if (!activeRepo) return;
@@ -74,26 +94,30 @@ function clearCurrentMentorSession() {
   clearMentorSession();
 }
 
+// Starts a new analysis when there is no usable snapshot for the current
+// selection; otherwise the action becomes a follow-up on the same evidence.
 function triggerMentorAction(mode) {
-  const sameSelection = Boolean(mentorSnapshotId) && mentorRequestedTarget === activeTarget;
-  if (conversationHistory.length === 0 || !sameSelection) {
-    startMentorAnalysis(mode, '', true);
-  } else {
-    const prompt = ACTION_PROMPTS[mode] || mode;
-    startMentorAnalysis('custom', prompt, false);
-  }
+  return startMentorAnalysis(mode, '', false);
 }
 
 let localSessionPromise;
-async function apiFetch(url, options = {}) {
-  localSessionPromise ||= fetch('/api/session', { credentials: 'same-origin' }).then(async response => {
+async function apiFetch(url, options = {}, retried = false) {
+  const sessionPromise = localSessionPromise ||= fetch('/api/session', { credentials: 'same-origin' }).then(async response => {
     if (!response.ok) throw new Error('本机会话初始化失败，请刷新页面');
     return (await response.json()).token;
   }).catch(error => { localSessionPromise = null; throw error; });
-  const token = await localSessionPromise;
+  const token = await sessionPromise;
   options.signal?.throwIfAborted();
   const headers = { ...options.headers, 'X-Local-Token': token };
-  return fetch(url, { ...options, headers, credentials: 'same-origin' });
+  const response = await fetch(url, { ...options, headers, credentials: 'same-origin' });
+  // A restarted service issues a new token. 401 is returned before any work is
+  // done, so fetching a fresh token and retrying once is safe for every route.
+  if (response.status === 401 && !retried) {
+    await response.body?.cancel().catch(() => {});
+    if (localSessionPromise === sessionPromise) localSessionPromise = null;
+    return apiFetch(url, options, true);
+  }
+  return response;
 }
 
 function renderMarkdown(text) {
@@ -234,6 +258,9 @@ async function loadKeeperStats() {
     if (stats.codex && stats.codex.tokens > 0) {
       parts.push(`Codex: ${formatK(stats.codex.tokens)}`);
     }
+    if (stats.claude && stats.claude.tokens > 0) {
+      parts.push(`Claude: ${formatK(stats.claude.tokens)}`);
+    }
 
     const primaryLimit = (rateLimits || []).find(r => r.label === '5h');
     if (primaryLimit) {
@@ -271,6 +298,11 @@ async function loadKeeperStats() {
             <div class="text-[var(--text-muted)] text-[10px]">今日 Codex / OpenAI</div>
             <div class="font-mono font-semibold text-[var(--diff-add-text)] text-xs mt-0.5">${formatK(stats.codex?.tokens || 0)} tokens</div>
             <div class="text-[10px] text-[var(--text-subtle)]">${stats.codex?.requests || 0} 次请求</div>
+          </div>
+          <div class="col-span-2 bg-[var(--bg-card)] p-2.5 rounded-lg border border-[var(--border-app)]">
+            <div class="text-[var(--text-muted)] text-[10px]">今日 Claude</div>
+            <div class="font-mono font-semibold text-[var(--text-primary)] text-xs mt-0.5">${formatK(stats.claude?.tokens || 0)} tokens</div>
+            <div class="text-[10px] text-[var(--text-subtle)]">${stats.claude?.requests || 0} 次请求</div>
           </div>
         </div>
       `;
@@ -927,22 +959,20 @@ async function startMentorAnalysis(mode, customPrompt = '', resetSession = false
   statusBar.classList.remove('hidden');
   statusText.textContent = '导师正在分析架构意图与代码实相...';
 
-  // 如果是多轮提问，先在界面追加用户提问气泡
-  if (!resetSession && customPrompt) {
-    const userBubble = document.createElement('div');
-    userBubble.className = 'flex justify-end';
-    userBubble.innerHTML = `
-      <div class="bg-[var(--bg-bubble-user)] border border-[var(--border-user-bubble)] rounded-2xl rounded-tr-sm px-4 py-2.5 max-w-xl text-xs text-[var(--text-primary)] shadow-sm leading-relaxed">
-        <div class="font-medium text-[var(--text-muted)] text-[11px] mb-1 flex items-center gap-1 justify-end">
-          <span>你</span> <i data-lucide="user" class="w-3 h-3 text-[var(--text-muted)]"></i>
-        </div>
-        <div>${escapeHtml(customPrompt)}</div>
+  // 每一轮都追加用户气泡：自由提问显示原文，精读动作显示动作名
+  const userBubble = document.createElement('div');
+  userBubble.className = 'flex justify-end';
+  userBubble.innerHTML = `
+    <div class="bg-[var(--bg-bubble-user)] border border-[var(--border-user-bubble)] rounded-2xl rounded-tr-sm px-4 py-2.5 max-w-xl text-xs text-[var(--text-primary)] shadow-sm leading-relaxed">
+      <div class="font-medium text-[var(--text-muted)] text-[11px] mb-1 flex items-center gap-1 justify-end">
+        <span>你</span> <i data-lucide="user" class="w-3 h-3 text-[var(--text-muted)]"></i>
       </div>
-    `;
-    chatStream.appendChild(userBubble);
-    lucide.createIcons();
-    chatStream.scrollTop = chatStream.scrollHeight;
-  }
+      <div>${escapeHtml(customPrompt || ACTION_LABELS[mode] || mode)}</div>
+    </div>
+  `;
+  chatStream.appendChild(userBubble);
+  lucide.createIcons();
+  chatStream.scrollTop = chatStream.scrollHeight;
 
   // 创建导师回答气泡容器
   const assistantBubble = document.createElement('div');
@@ -984,6 +1014,10 @@ async function startMentorAnalysis(mode, customPrompt = '', resetSession = false
     if (atBottom) chatStream.scrollTop = chatStream.scrollHeight;
   };
 
+  const sentHistory = historyForRequest(conversationHistory);
+  if (sentHistory.length < conversationHistory.length) {
+    statusText.textContent = `对话较长：本次携带最近 ${sentHistory.length} 条消息，首次代码快照仍完整保留`;
+  }
   const payload = {
     repoPath: activeRepo.path,
     target: activeTarget,
@@ -991,20 +1025,37 @@ async function startMentorAnalysis(mode, customPrompt = '', resetSession = false
     customPrompt,
     focusFile: currentFocusFile,
     model: modelSelect.value,
-    history: conversationHistory,
+    history: sentHistory,
     snapshotId: mentorSnapshotId
   };
+  // The server echoes the instruction it actually sent, so the history records
+  // the real question even for action buttons.
+  let turnInstruction = customPrompt;
+  let renewing = false;
+  let snapshotRenewed = false;
 
   try {
-    const response = await apiFetch('/api/mentor/analyze', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-      signal: controller.signal
-    });
-
-    if (!response.ok) {
+    let response;
+    while (true) {
+      response = await apiFetch('/api/mentor/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        signal: controller.signal
+      });
+      if (response.ok) break;
       const error = await response.json().catch(() => ({}));
+      if (!isCurrent()) return;
+      if (!renewing && response.status === 409 && error.code === 'snapshot-expired' && conversationHistory.length) {
+        // The snapshot sat idle too long or the service restarted. Re-capture
+        // evidence for the same selection and keep the conversation; the answer
+        // footer states that the evidence was renewed.
+        renewing = true;
+        payload.snapshotId = null;
+        payload.renewSnapshot = true;
+        statusText.textContent = '分析快照已失效，正在重新捕获证据…';
+        continue;
+      }
       const failure = new Error(error.error || `服务响应异常: ${response.status}`);
       failure.status = response.status;
       throw failure;
@@ -1031,6 +1082,8 @@ async function startMentorAnalysis(mode, customPrompt = '', resetSession = false
             mentorSnapshotId = event.snapshotId;
             mentorResolvedTarget = event.resolvedTarget;
             mentorRequestedTarget = typeof event.requestedTarget === 'string' ? event.requestedTarget : activeTarget;
+            snapshotRenewed = renewing || Boolean(event.renewed);
+            if (typeof event.instruction === 'string' && event.instruction) turnInstruction = event.instruction;
           } else if (event.type === 'status') {
             statusText.textContent = event.message;
           } else if (event.type === 'chunk' && !finalized) {
@@ -1048,7 +1101,10 @@ async function startMentorAnalysis(mode, customPrompt = '', resetSession = false
             if (mentorResolvedTarget) {
               const evidenceNotice = document.createElement('p');
               evidenceNotice.className = 'text-[10px] text-slate-500 mt-2';
-              evidenceNotice.textContent = `分析快照: ${mentorResolvedTarget === 'working-tree' ? '首次读取的工作区' : mentorResolvedTarget} · 追问保留首次证据`;
+              const evidenceTarget = mentorResolvedTarget === 'working-tree' ? '读取时的工作区' : mentorResolvedTarget;
+              evidenceNotice.textContent = snapshotRenewed
+                ? `分析快照已在会话中重新捕获: ${evidenceTarget} · 早先回答可能基于旧证据`
+                : `分析快照: ${evidenceTarget} · 追问保留首次证据`;
               footerEl.appendChild(evidenceNotice);
             }
             if (currentTurnUsage) {
@@ -1058,9 +1114,9 @@ async function startMentorAnalysis(mode, customPrompt = '', resetSession = false
               usage.textContent = `本次分析: ${numeric('total_tokens')} tokens (输入: ${numeric('prompt_tokens')}, 输出: ${numeric('completion_tokens')})`;
               footerEl.appendChild(usage);
             }
-            if (customPrompt) conversationHistory.push({ role: 'user', content: customPrompt });
+            if (turnInstruction) conversationHistory.push({ role: 'user', content: turnInstruction });
             conversationHistory.push({ role: 'assistant', content: currentTurnMarkdown });
-            if (footerEl) renderQuickChips(footerEl);
+            if (footerEl) renderQuickChips(footerEl, mode);
             loadKeeperStats();
             statusBar.classList.add('hidden');
             saveCurrentRepoSession();
@@ -1105,16 +1161,19 @@ async function startMentorAnalysis(mode, customPrompt = '', resetSession = false
   }
 }
 
-// 快速追问胶囊生成
-function renderQuickChips(container) {
+// 快速追问胶囊生成：第一项随本轮模式变化，只有出过题时才“展开考题”
+function renderQuickChips(container, mode) {
+  const drill = mode === 'drill'
+    ? { prompt: '请深度展开刚才提出的自测考题，给出详细推演思路与参考答案', label: '展开自测考题推演与答案' }
+    : { prompt: '请基于刚才的讲解出两道场景推演自测题，先列题目，推理过程和参考答案放在最后', label: '出两道自测题检验理解' };
   const chipsWrapper = document.createElement('div');
   chipsWrapper.className = 'mt-5 pt-3.5 border-t border-[var(--border-app)] flex flex-wrap items-center gap-2 text-xs';
   chipsWrapper.innerHTML = `
     <span class="text-[var(--text-subtle)] text-[10px] mr-1 flex items-center gap-1 font-mono">
       <i data-lucide="sparkles" class="w-3 h-3 text-[var(--accent-terracotta)]"></i> 快速追问:
     </span>
-    <button class="quick-chip" data-action="ask" data-value="请深度展开刚才提出的苏格拉底考题，给出详细推演思路与参考答案">
-      <i data-lucide="chevron-right" class="w-3 h-3 text-[var(--accent-terracotta)]"></i> 展开自测考题推演与答案
+    <button class="quick-chip" data-action="ask" data-value="${drill.prompt}">
+      <i data-lucide="chevron-right" class="w-3 h-3 text-[var(--accent-terracotta)]"></i> ${drill.label}
     </button>
     <button class="quick-chip" data-action="ask" data-value="针对本次分析指出的隐蔽暗桩，请给出具体的防御性重构代码">
       <i data-lucide="chevron-right" class="w-3 h-3 text-[var(--accent-terracotta)]"></i> 针对隐蔽暗桩给出防御代码

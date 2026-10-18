@@ -176,7 +176,7 @@ test('restoring a repo session keeps its target and focused file', async () => {
   assert.equal(get('mentorRequestedTarget'), 'C1');
 });
 
-test('an expired snapshot is dropped so the next request starts a new analysis', async () => {
+test('a snapshot that no longer matches the selection is dropped so the next request starts over', async () => {
   let calls = 0;
   const bodies = [];
   const { context, get } = loadClient((url, options) => {
@@ -184,7 +184,7 @@ test('an expired snapshot is dropped so the next request starts a new analysis',
     calls++;
     bodies.push(JSON.parse(options.body));
     if (calls === 2) {
-      return Promise.resolve(new Response(JSON.stringify({ success: false, error: '分析快照已过期或被回收，请重新开始精读' }), {
+      return Promise.resolve(new Response(JSON.stringify({ success: false, error: '快照与当前选择不一致，请重新开始精读' }), {
         status: 409, headers: { 'Content-Type': 'application/json' }
       }));
     }
@@ -236,4 +236,64 @@ test('rapid chunks render once on completion without losing text', async () => {
 test('empty and length-limited model replies cannot report success', async () => {
   await assert.rejects(relayCompletion(new Response('data: [DONE]\n\n'), () => {}), /没有返回/);
   await assert.rejects(relayCompletion(new Response('data: {"choices":[{"delta":{"content":"partial"},"finish_reason":"length"}]}\n\n'), () => {}), /未完成/);
+});
+
+const analyzeClient = respond => {
+  const bodies = [];
+  const client = loadClient((url, options) => {
+    if (url !== '/api/mentor/analyze') return keeperResponse();
+    bodies.push(JSON.parse(options.body));
+    return Promise.resolve(respond(bodies.length, bodies.at(-1)));
+  });
+  return { ...client, bodies };
+};
+const answer = (snapshotId, instruction, extra = {}) => eventResponse([
+  { type: 'snapshot', snapshotId, requestedTarget: 'HEAD', resolvedTarget: 'a'.repeat(40), instruction, ...extra },
+  { type: 'chunk', text: `answer-${snapshotId}` }, { type: 'finished' }
+]);
+
+test('action turns record the instruction the server sent', async () => {
+  const { context, get, bodies } = analyzeClient(call => answer('snap', call === 1 ? 'server walkthrough' : 'server drill'));
+  await context.startMentorAnalysis('walkthrough', '', false);
+  await context.triggerMentorAction('drill');
+  assert.deepEqual(bodies.map(body => [body.mode, body.customPrompt, body.snapshotId]), [['walkthrough', '', null], ['drill', '', 'snap']]);
+  assert.deepEqual(JSON.parse(get('JSON.stringify(conversationHistory.map(turn => turn.content))')),
+    ['server walkthrough', 'answer-snap', 'server drill', 'answer-snap']);
+});
+
+test('long conversations send only whole recent rounds within the server budget', async () => {
+  const { context, get, run, nodes, bodies } = analyzeClient(() => answer('snap', 'next'));
+  run("mentorSnapshotId = 'snap'; mentorRequestedTarget = 'HEAD'; conversationHistory = [];"
+    + "for (let i = 0; i < 4; i++) conversationHistory.push({ role: 'user', content: 'q' + i }, { role: 'assistant', content: 'x'.repeat(10000) });");
+  await context.startMentorAnalysis('custom', 'next', false);
+  const sent = bodies[0].history;
+  assert.deepEqual(sent.map(turn => turn.content.slice(0, 2)), ['q2', 'xx', 'q3', 'xx']);
+  assert.ok(sent.reduce((sum, turn) => sum + turn.content.length, 0) <= 24000);
+  assert.equal(get('conversationHistory.length'), 10);
+  assert.match(nodes.get('mentor-status-text').textContent, /最近 4 条/);
+});
+
+test('an expired snapshot is renewed in place and the conversation survives', async () => {
+  const { context, get, nodes, bodies } = analyzeClient(call => call === 2
+    ? new Response(JSON.stringify({ success: false, error: '分析快照已过期或被回收', code: 'snapshot-expired' }), { status: 409 })
+    : answer(`snap-${call}`, call === 1 ? 'walk' : 'why', { renewed: call === 3 }));
+  await context.startMentorAnalysis('walkthrough', '', false);
+  await context.startMentorAnalysis('custom', 'why', false);
+  assert.equal(bodies[1].snapshotId, 'snap-1');
+  assert.equal(bodies[2].snapshotId, null); assert.equal(bodies[2].renewSnapshot, true);
+  assert.deepEqual(bodies[2].history, bodies[1].history);
+  assert.equal(get('mentorSnapshotId'), 'snap-3');
+  assert.deepEqual(JSON.parse(get('JSON.stringify(conversationHistory.map(turn => turn.content))')), ['walk', 'answer-snap-1', 'why', 'answer-snap-3']);
+  const footer = [...nodes.values()].filter(node => node.id.startsWith('footer-')).at(-1);
+  assert.match(footer.children[0].textContent, /重新捕获/);
+});
+
+test('a session token rejected after a service restart is refreshed once', async () => {
+  let calls = 0;
+  const client = loadClient(() => Promise.resolve(++calls === 1
+    ? new Response(JSON.stringify({ error: '本机会话已失效' }), { status: 401 })
+    : Response.json({ success: true, models: [{ id: 'm', name: 'Model' }] })));
+  await client.context.loadModels();
+  assert.equal(calls, 2);
+  assert.equal(client.get('modelsReady'), true);
 });
