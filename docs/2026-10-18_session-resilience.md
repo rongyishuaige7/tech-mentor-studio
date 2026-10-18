@@ -65,8 +65,10 @@
   - `renewSnapshot` 类型校验与空白问题。
 - 4 项新增客户端测试先在修改前的代码上确认失败，再在修复后确认通过。
 - `npm run check`：通过。`npm run build`：通过。
-- 浏览器回归：在正常终端运行了 `npm run test:browser`，6 项全部在启动阶段失败，页面代码没有执行。5 项报错 Playwright 1.64 需要的 `chromium_headless_shell-1248` 未下载，1 项（API 请求用例）报错 `127.0.0.1:3301` 上没有服务。已对照 e2e 断言静态核对，与本次改动兼容：mock SSE 不带 `instruction` 时动作轮仍只记录回答，追问发送 1 条历史、结束后共 3 条，终止生成后历史为空，Keeper 失败文案未改动。需执行 `npx playwright install chromium` 并在 3301 启动服务后重跑。
-- 未运行：`test/start.test.js`（需要 `lsof` 和真实端口）。未发起真实模型推理请求。需要在正常终端运行 `npm test` 补充验证。
+- 正常终端补充验证：
+  - `npm test`：63 项全部通过，包括上面受环境限制的断开连接用例和 `test/start.test.js`。
+  - `npm run test:browser`：首次运行 6 项都在启动阶段失败，页面代码没有执行。5 项报错 Playwright 1.64 需要的 `chromium_headless_shell-1248` 未下载，1 项报错 `127.0.0.1:3301` 上没有服务。执行 `npx playwright install chromium`、在 3301 启动服务后重跑，6 项全部通过。
+- 未发起真实模型推理请求，浏览器回归中的模型回答使用测试替身。
 
 ## 保留边界
 
