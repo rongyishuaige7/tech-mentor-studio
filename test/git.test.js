@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { gitFixture } from './git-helper.js';
 import { loadDiff, getCommits, getPresets, resolveTarget, runGit, getStatus } from '../lib/git.js';
-import { decodeGitPath, parseDiffFiles, getCleanDiffForMentor, newFilePatch } from '../lib/diff.js';
+import { decodeGitPath, parseDiffFiles, getCleanDiffForMentor, newFilePatch, numberDiffLines } from '../lib/diff.js';
 
 test('unborn repository combines staged and untracked final working contents', async t => {
   const { root, git, write } = gitFixture(t);
@@ -138,4 +138,19 @@ test('modified tracked symlinks remain excluded in worktree and historical diffs
   assert.equal(working.files.length, 0); assert.ok(working.warnings.length);
   const target = commit('modified-link');
   assert.equal((await loadDiff(root, target)).files.length, 0);
+});
+
+test('unquoted paths containing " b/" keep their name when no content lines follow', async t => {
+  const { root, write, commit } = gitFixture(t);
+  write('x b/y.js', 'a\n'); commit('base');
+  fs.chmodSync(path.join(root, 'x b/y.js'), 0o755);
+  assert.deepEqual((await loadDiff(root)).files.map(file => file.path), ['x b/y.js']);
+  const [copied] = parseDiffFiles('diff --git a/src/a.js b/lib/a.js\nsimilarity index 100%\ncopy from src/a.js\ncopy to lib/a.js\n');
+  assert.equal(copied.path, 'lib/a.js'); assert.equal(copied.oldPath, 'src/a.js');
+});
+
+test('mentor diff lines carry real new-file and old-file line numbers', () => {
+  const patch = 'diff --git a/a.js b/a.js\n--- a/a.js\n+++ b/a.js\n@@ -10,4 +10,4 @@\n keep\n-old\n---minus\n+new\n+++plus\n tail\n\\ No newline at end of file\n';
+  assert.equal(numberDiffLines(patch), 'diff --git a/a.js b/a.js\n--- a/a.js\n+++ b/a.js\n@@ -10,4 +10,4 @@\n'
+    + ' 10|keep\n-11|old\n-12|--minus\n+11|new\n+12|++plus\n 13|tail\n\\ No newline at end of file\n');
 });
