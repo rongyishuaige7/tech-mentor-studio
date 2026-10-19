@@ -418,6 +418,25 @@ test('streaming renders finished blocks once and re-renders only the open tail',
   assert.ok(streaming < full.length * 3, `streaming parsed ${streaming} characters for a ${full.length}-character answer`);
 });
 
+test('Keeper polling stops while the page is hidden and refreshes on return', async () => {
+  const calls = [];
+  const { context } = loadClient(url => { calls.push(url); return keeperResponse(); });
+  const listeners = [], timers = new Set(); let next = 1;
+  context.document.addEventListener = (type, fn) => { if (type === 'visibilitychange') listeners.push(fn); };
+  context.setInterval = () => { timers.add(next); return next++; };
+  context.clearInterval = id => { timers.delete(id); };
+  const become = state => { context.document.visibilityState = state; listeners.forEach(fn => fn()); };
+  context.document.visibilityState = 'visible';
+  context.startKeeperPolling();
+  assert.equal(timers.size, 1);
+  become('hidden');
+  assert.equal(timers.size, 0);
+  become('visible');
+  assert.equal(timers.size, 1);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(calls.filter(url => url === '/api/tokens/keeper-stats').length, 1);
+});
+
 test('code references resolve only to diff files, including paths run into Chinese prose', () => {
   const { context } = loadClient(keeperResponse);
   const paths = ['lib/mentor.js', 'public/app.js', 'test/app.js', '目录/中文.js'];

@@ -122,6 +122,29 @@ test('both themes keep small text and Mermaid diagrams readable, redrawing diagr
   }
 });
 
+test('Keeper polling pauses while the page is hidden and refreshes on return', async ({ page }) => {
+  await page.clock.install();
+  await fixture(page);
+  let polls = 0;
+  page.on('request', request => { if (request.url().includes('/api/tokens/keeper-stats')) polls++; });
+  const setVisibility = state => page.evaluate(value => {
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => value });
+    document.dispatchEvent(new Event('visibilitychange'));
+  }, state);
+  await page.goto('/');
+  await expect.poll(() => polls).toBe(1);
+  await page.clock.runFor(30000);
+  await expect.poll(() => polls).toBe(3);
+  await setVisibility('hidden');
+  await page.clock.runFor(60000);
+  await page.waitForTimeout(300);
+  expect(polls).toBe(3);
+  await setVisibility('visible');
+  await expect.poll(() => polls).toBe(4);
+  await page.clock.runFor(15000);
+  await expect.poll(() => polls).toBe(5);
+});
+
 test('large Diff pages retain correct line numbers and full copy', async ({ page, context }) => {
   await context.grantPermissions(['clipboard-read', 'clipboard-write']);
   const patch = 'diff --git a/code.js b/code.js\nnew file mode 100644\n--- /dev/null\n+++ b/code.js\n@@ -0,0 +1,4500 @@\n'

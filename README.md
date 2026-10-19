@@ -51,7 +51,7 @@ chmod 600 ~/.config/tech-mentor-studio/proxy-key
 SCAN_ROOTS_JSON="$(node -p 'JSON.stringify([process.cwd()])')" npm start
 ```
 
-Keeper 分别显示每个窗口的最新观测值，过期后显示“等待更新 / 未知”，不推测额度已恢复。今日统计使用 UTC 日期，计量状态与模型连接状态分别显示。
+Keeper 分别显示每个窗口的最新观测值，过期后显示“等待更新 / 未知”，不推测额度已恢复。今日统计使用 UTC 日期，计量状态与模型连接状态分别显示。用量每 15 秒刷新；页面在后台时暂停刷新，回到前台时立即刷新一次。
 
 ## 使用分析快照
 

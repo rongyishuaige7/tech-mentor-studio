@@ -304,8 +304,23 @@ document.addEventListener('DOMContentLoaded', () => {
   loadModels();
   loadRepos();
   loadKeeperStats();
-  setInterval(loadKeeperStats, 15000);
+  startKeeperPolling();
 });
+
+// Keeper usage only matters while the page is visible: a hidden tab stops
+// polling (each poll runs two sqlite3 queries) and refreshes once on return.
+let keeperTimer = null;
+function startKeeperPolling() {
+  const sync = () => {
+    clearInterval(keeperTimer); keeperTimer = null;
+    if (document.visibilityState !== 'hidden') keeperTimer = setInterval(loadKeeperStats, 15000);
+  };
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'hidden') loadKeeperStats();
+    sync();
+  });
+  sync();
+}
 
 // 动态同步 CPA 活跃模型清单
 function updateAnalysisAvailability() {
