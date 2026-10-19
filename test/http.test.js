@@ -2,7 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { gitFixture } from './git-helper.js';
+import os from 'node:os';
+import { execFileSync } from 'node:child_process';
+import { gitFixture, gitSpawnCounter } from './git-helper.js';
 import { appFixture } from './http-helper.js';
 
 test('HTTP selection supports unborn diff, registered IDs and JSON errors', async t => {
@@ -20,6 +22,26 @@ test('HTTP selection supports unborn diff, registered IDs and JSON errors', asyn
   const malformed = await request('/api/repos/add', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{invalid' });
   assert.equal(malformed.status, 400);
   assert.match((await malformed.json()).error, /JSON/);
+});
+
+test('a repository scan starts at most three git processes per repository, two once verified', async t => {
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'mentor-scan-'));
+  t.after(() => fs.rmSync(parent, { recursive: true, force: true }));
+  const git = (cwd, ...args) => execFileSync('git', ['-c', 'user.name=F', '-c', 'user.email=f@example.invalid', ...args], { cwd });
+  for (let i = 0; i < 4; i++) {
+    const repo = path.join(parent, `repo${i}`); fs.mkdirSync(repo); git(repo, 'init', '-q', '-b', 'main');
+    fs.writeFileSync(path.join(repo, 'a.js'), 'a\n');
+    if (i < 3) { git(repo, 'add', '-A'); git(repo, 'commit', '-qm', 'first'); } // repo3 stays unborn
+  }
+  const { request } = await appFixture(t, parent, { dataDir: path.join(parent, '.mentor-data'), scanRoots: [parent] });
+  const count = gitSpawnCounter(t);
+  const first = await count(async () => (await request('/api/repos?refresh=1')).json());
+  assert.equal(first.result.repos.length, 4);
+  assert.ok(first.spawns <= 3 * 4, `first scan started ${first.spawns} git processes`);
+  const second = await count(async () => (await request('/api/repos?refresh=1')).json());
+  assert.ok(second.spawns <= 2 * 4, `second scan started ${second.spawns} git processes`);
+  assert.deepEqual(second.result.repos.map(repo => repo.dirtyCount).sort(), [0, 0, 0, 1]);
+  assert.ok(second.result.repos.filter(repo => repo.lastCommit).every(repo => repo.lastCommit.msg === 'first'));
 });
 
 test('the diff response carries each patch once, in files', async t => {

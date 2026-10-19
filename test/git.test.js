@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { gitFixture } from './git-helper.js';
-import { loadDiff, getCommits, getPresets, resolveTarget, runGit, getStatus } from '../lib/git.js';
+import { loadDiff, getCommits, getPresets, resolveTarget, runGit, getStatus, getRepoSummary } from '../lib/git.js';
 import { decodeGitPath, parseDiffFiles, getCleanDiffForMentor, newFilePatch, numberDiffLines, generatedDir } from '../lib/diff.js';
 
 test('unborn repository combines staged and untracked final working contents', async t => {
@@ -172,6 +172,29 @@ test('the 8 MiB worktree limit still applies across many small untracked files',
   const content = ('x'.repeat(99) + '\n').repeat(2900);
   for (let i = 0; i < 30; i++) write(`gen/f${i}.txt`, content);
   await assert.rejects(loadDiff(root), error => error.status === 413);
+});
+
+test('repository summaries match separate branch, status and log queries', async t => {
+  const separately = async root => {
+    const commits = await getCommits(root, 1);
+    return { branch: (await runGit(['branch', '--show-current'], root)).trim() || 'HEAD', dirtyCount: (await getStatus(root)).length,
+      lastCommit: commits[0] ? { hash: commits[0].shortHash, msg: commits[0].msg, author: commits[0].author } : null };
+  };
+  // The relative time can tick between the two calls, so it is checked apart.
+  const comparable = ({ lastCommit, ...rest }) => ({ ...rest, lastCommit: lastCommit && { hash: lastCommit.hash, msg: lastCommit.msg, author: lastCommit.author } });
+  const { root, git, write, commit } = gitFixture(t);
+  write('new.js', 'x\n');
+  assert.deepEqual(comparable(await getRepoSummary(root)), await separately(root));
+  write('a.js', 'a\n'); write('b.js', 'b\n'); commit('subject | with separators');
+  write('a.js', 'changed\n'); git('mv', 'b.js', 'c b.js'); write('d.js', 'd\n'); write('e.js', 'e\n'); git('add', 'e.js');
+  const dirty = await getRepoSummary(root);
+  assert.deepEqual(comparable(dirty), await separately(root));
+  assert.equal(dirty.dirtyCount, 4);
+  assert.match(dirty.lastCommit.time, /ago/);
+  git('checkout', '-q', '--detach');
+  const detached = await getRepoSummary(root);
+  assert.equal(detached.branch, 'HEAD');
+  assert.deepEqual(comparable(detached), await separately(root));
 });
 
 test('mentor diff lines carry real new-file and old-file line numbers', () => {

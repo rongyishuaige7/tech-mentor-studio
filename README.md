@@ -45,7 +45,7 @@ chmod 600 ~/.config/tech-mentor-studio/proxy-key
 | `SCAN_ROOTS_JSON` | Desktop、Developer、Github 和主目录 | 绝对路径数组 |
 | `NO_BROWSER` | 未设置 | 设为 `1` 跳过自动打开浏览器 |
 
-扫描包括指定根目录及其一级子目录，还会读取已保存的关注列表；不会递归遍历整个磁盘。把默认扫描根限制到当前项目可使用（仍保留已保存的关注列表）：
+扫描包括指定根目录及其一级子目录，还会读取已保存的关注列表；不会递归遍历整个磁盘。仓库列表缓存 30 秒，点击刷新按钮会立即重新扫描。把默认扫描根限制到当前项目可使用（仍保留已保存的关注列表）：
 
 ```bash
 SCAN_ROOTS_JSON="$(node -p 'JSON.stringify([process.cwd()])')" npm start

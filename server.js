@@ -1,4 +1,4 @@
-import { runGit, getStatus, getCommits, getPresets, loadDiff } from './lib/git.js';
+import { getStatus, getCommits, getPresets, loadDiff, getRepoSummary } from './lib/git.js';
 import { hasProjectFacts } from './lib/facts.js';
 import { mentorHandler } from './lib/mentor.js';
 import { localAccess, RepositoryRegistry, httpError, redactKnownSecret } from './lib/security.js';
@@ -83,7 +83,8 @@ if (!Array.isArray(DEFAULT_SCAN_ROOTS) || !DEFAULT_SCAN_ROOTS.every(root => type
 let scanCache = null;
 let scanPending = null;
 async function scanRepositories(refresh = false) {
-  if (!refresh && scanCache && Date.now() - scanCache.at < 5000) return scanCache.repos;
+  // The refresh button bypasses this; adding a repository clears it.
+  if (!refresh && scanCache && Date.now() - scanCache.at < 30000) return scanCache.repos;
   if (scanPending) return scanPending;
   scanPending = (async () => {
     const discovered = new Set(getWatchlist());
@@ -108,14 +109,7 @@ async function scanRepositories(refresh = false) {
         let registered;
         try {
           registered = await registry.register(repoPath);
-          const [branch, commits, status] = await Promise.all([
-            runGit(['branch', '--show-current'], registered.path),
-            getCommits(registered.path, 1), getStatus(registered.path)
-          ]);
-          const latest = commits[0];
-          repos.set(registered.id, { ...registered, name: path.basename(registered.path),
-            branch: branch.trim() || 'HEAD', dirtyCount: status.length,
-            lastCommit: latest ? { hash: latest.shortHash, msg: latest.msg, time: latest.relTime, author: latest.author } : null });
+          repos.set(registered.id, { ...registered, name: path.basename(registered.path), ...await getRepoSummary(registered.path) });
         } catch (error) {
           if (registered) repos.set(registered.id, { ...registered, name: path.basename(registered.path), branch: 'unknown', dirtyCount: 0, error: error.message });
         }
