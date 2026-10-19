@@ -102,6 +102,63 @@ test('the first answer lists the evidence the model received', async ({ page }) 
   await expect(details.locator('li')).toHaveText(['src/app.js', 'README.md', 'src/app.js：第 1-40, 90-120 行']);
 });
 
+test('repository and commit rows work from the keyboard and keep focus when re-rendered', async ({ page }) => {
+  await fixture(page);
+  await page.route(/\/api\/repos(?:\?.*)?$/, route => route.fulfill({ json: { success: true, repos: [
+    { id: 'fixture', name: 'Fixture', path: '/fixture', branch: 'main', dirtyCount: 0 },
+    { id: 'second', name: 'Second', path: '/second', branch: 'dev', dirtyCount: 0 }
+  ] } }));
+  await page.route('**/api/repos/second/commits', route => route.fulfill({ json: { success: true, presets: [], dirtyCount: 0, commits: [
+    { hash: 'b'.repeat(40), shortHash: 'bbbbbbb', msg: 'newer', author: 'audit', relTime: 'now' },
+    { hash: 'c'.repeat(40), shortHash: 'ccccccc', msg: 'older', author: 'audit', relTime: 'then' }
+  ] } }));
+  await page.route('**/api/repos/second/diff?*', route => route.fulfill({ json: { success: true, files: [], hasFacts: false } }));
+  const diffTargets = [];
+  page.on('request', request => { const url = new URL(request.url()); if (url.pathname === '/api/repos/second/diff') diffTargets.push(url.searchParams.get('target')); });
+  await page.goto('/');
+  await expect(page.locator('#active-repo-name')).toHaveText('Fixture');
+  const repoRow = id => page.locator(`#repo-list [data-action="repo"][data-value="${id}"]`);
+  await page.locator('#repo-search').focus();
+  await page.keyboard.press('Tab');
+  await expect(repoRow('fixture')).toBeFocused();
+  expect(await repoRow('fixture').evaluate(row => getComputedStyle(row).outlineStyle)).toBe('solid');
+  await page.keyboard.press('Tab');
+  await expect(repoRow('second')).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(page.locator('#active-repo-name')).toHaveText('Second');
+  await expect(repoRow('second')).toHaveAttribute('aria-current', 'true');
+  await expect(repoRow('fixture')).toHaveAttribute('aria-current', 'false');
+  await expect(repoRow('second')).toBeFocused();
+  const commitRow = hash => page.locator(`#commit-list [data-value="${hash}"]`);
+  await expect(commitRow('b'.repeat(40))).toHaveAttribute('aria-current', 'true');
+  await commitRow('c'.repeat(40)).focus();
+  await page.keyboard.press('Space');
+  await expect(commitRow('c'.repeat(40))).toHaveAttribute('aria-current', 'true');
+  await expect(commitRow('c'.repeat(40))).toBeFocused();
+  await expect.poll(() => diffTargets.at(-1)).toBe('c'.repeat(40));
+});
+
+test('the usage details open from the keyboard and analysis progress reaches screen readers', async ({ page }) => {
+  await fixture(page);
+  await page.route('**/api/mentor/analyze', route => route.fulfill({ contentType: 'text/event-stream', body: stream('回答') }));
+  await page.goto('/');
+  const pill = page.locator('#keeper-token-pill'), popover = page.locator('#keeper-detail-popover');
+  await expect(page.locator('#keeper-token-text')).toHaveText('计量不可用');
+  await pill.focus();
+  await expect(pill).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(popover).toBeVisible();
+  await expect(pill).toHaveAttribute('aria-expanded', 'true');
+  await page.keyboard.press('Escape');
+  await expect(popover).toBeHidden();
+  await expect(pill).toHaveAttribute('aria-expanded', 'false');
+  await expect(pill).toBeFocused();
+  for (const name of ['刷新所有仓库', '手动输入仓库路径', '清空导师对话']) await expect(page.getByRole('button', { name, exact: true })).toHaveCount(1);
+  await expect(page.getByRole('textbox', { name: '向导师追问', exact: true })).toHaveCount(1);
+  await page.locator('#btn-walkthrough').click();
+  await expect(page.locator('#mentor-live')).toHaveText('导师回答完成');
+});
+
 test('both themes keep small text and Mermaid diagrams readable, redrawing diagrams on switch', async ({ page }) => {
   await page.addInitScript(() => localStorage.setItem('mentor-theme', 'light'));
   await fixture(page);

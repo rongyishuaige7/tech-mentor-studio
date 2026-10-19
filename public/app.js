@@ -476,8 +476,9 @@ function renderCommitPresets(presets) {
     container.innerHTML = '';
     return;
   }
+  const focused = focusedRow(container);
   container.innerHTML = presets.map(p => `
-    <button data-action="target" data-value="${escapeHtml(p.hash)}"
+    <button type="button" data-action="target" data-value="${escapeHtml(p.hash)}" aria-pressed="${activeTarget === p.hash}"
             class="px-2 py-0.5 rounded text-[10px] font-mono transition border ${
               activeTarget === p.hash
                 ? 'bg-[var(--accent-terracotta)] border-[var(--accent-terracotta)] text-[#ffffff] font-semibold'
@@ -486,6 +487,22 @@ function renderCommitPresets(presets) {
       ${escapeHtml(p.shortHash)}
     </button>
   `).join('');
+  restoreFocus(container, focused);
+}
+
+// Lists are re-rendered with innerHTML, which drops keyboard focus; these keep
+// it on the row or chip with the same action and value.
+function focusedRow(container) {
+  const active = document.activeElement;
+  if (!active?.dataset?.action || typeof container.contains !== 'function' || !container.contains(active)) return null;
+  return { action: active.dataset.action, value: active.dataset.value };
+}
+
+function restoreFocus(container, focused) {
+  if (!focused) return;
+  const match = [...container.querySelectorAll('[data-action]')]
+    .find(element => element.dataset.action === focused.action && element.dataset.value === focused.value);
+  match?.focus();
 }
 
 function setupEventListeners() {
@@ -529,6 +546,15 @@ function setupEventListeners() {
       case 'panel': showPanel(value); break;
     }
   });
+  // Repository and commit rows are divs with role="button"; Enter and Space
+  // activate them the way they would a native button.
+  document.addEventListener('keydown', event => {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    const row = event.target;
+    if (!row?.matches?.('[data-action][role="button"]')) return;
+    event.preventDefault();
+    row.click();
+  });
   document.getElementById('btn-refresh').addEventListener('click', () => loadRepos(true));
   document.getElementById('btn-theme-toggle')?.addEventListener('click', toggleTheme);
   document.getElementById('btn-retry-models').addEventListener('click', loadModels);
@@ -541,14 +567,23 @@ function setupEventListeners() {
   const keeperPill = document.getElementById('keeper-token-pill');
   const keeperPopover = document.getElementById('keeper-detail-popover');
   if (keeperPill && keeperPopover) {
+    const setKeeperOpen = open => {
+      keeperPopover.classList.toggle('hidden', !open);
+      keeperPill.setAttribute('aria-expanded', String(open));
+    };
     keeperPill.addEventListener('click', (e) => {
       e.stopPropagation();
-      keeperPopover.classList.toggle('hidden');
+      setKeeperOpen(keeperPopover.classList.contains('hidden'));
     });
     document.addEventListener('click', (e) => {
-      if (!keeperPopover.contains(e.target) && !keeperPill.contains(e.target)) {
-        keeperPopover.classList.add('hidden');
-      }
+      if (!keeperPopover.contains(e.target) && !keeperPill.contains(e.target)) setKeeperOpen(false);
+    });
+    // Escape closes the details; focus returns to the pill only if it was there or inside.
+    document.addEventListener('keydown', (e) => {
+      if (e.key !== 'Escape' || keeperPopover.classList.contains('hidden')) return;
+      const inside = document.activeElement === keeperPill || keeperPopover.contains(document.activeElement);
+      setKeeperOpen(false);
+      if (inside) keeperPill.focus();
     });
   }
 
@@ -644,12 +679,13 @@ function renderRepoList(repos) {
     return;
   }
 
+  const focused = focusedRow(listEl);
   listEl.innerHTML = repos.map(repo => {
     const isSelected = activeRepo && activeRepo.id === repo.id;
     const hasDirty = repo.dirtyCount > 0;
 
     return `
-      <div data-action="repo" data-value="${escapeHtml(repo.id)}"
+      <div data-action="repo" data-value="${escapeHtml(repo.id)}" role="button" tabindex="0" aria-current="${isSelected ? 'true' : 'false'}"
            class="p-2.5 rounded-lg cursor-pointer transition flex flex-col gap-1 border ${
              isSelected
                ? 'bg-[var(--bg-surface-hover)] border-[var(--accent-terracotta)] text-[var(--text-primary)]'
@@ -680,6 +716,7 @@ function renderRepoList(repos) {
   }).join('');
 
   lucide.createIcons();
+  restoreFocus(listEl, focused);
 }
 
 window.selectRepoById = (id) => {
@@ -834,12 +871,13 @@ function renderCommitList(commits) {
     return;
   }
 
+  const focused = focusedRow(commitListEl);
   commitListEl.innerHTML = commits.map(c => {
     const isSelected = activeTarget === c.hash;
     const isWorkingTree = c.isWorkingTree;
 
     return `
-      <div data-action="target" data-value="${escapeHtml(c.hash)}"
+      <div data-action="target" data-value="${escapeHtml(c.hash)}" role="button" tabindex="0" aria-current="${isSelected ? 'true' : 'false'}"
            class="p-2 px-3 cursor-pointer transition flex items-center justify-between border-l-2 ${
              isSelected
                ? 'bg-[var(--bg-surface-hover)] border-[var(--accent-terracotta)] text-[var(--text-primary)] font-medium'
@@ -863,6 +901,7 @@ function renderCommitList(commits) {
     `;
   }).join('');
   lucide.createIcons();
+  restoreFocus(commitListEl, focused);
 }
 
 // Switching target parks the current conversation and brings back the one
@@ -987,7 +1026,7 @@ function renderFileFilterChips(files) {
   const allActive = currentFocusFile === null;
   let html = `
     <span class="text-[var(--text-subtle)] text-[10px]">变动文件:</span>
-    <button data-action="focus-all"
+    <button type="button" data-action="focus-all" aria-pressed="${allActive}"
             class="px-2 py-0.5 rounded text-[10px] font-mono transition shrink-0 ${
               allActive ? 'bg-[var(--accent-terracotta)] text-[#ffffff] font-semibold' : 'bg-[var(--btn-action-bg)] border border-[var(--border-app)] text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--btn-action-hover)]'
             }">
@@ -1001,7 +1040,7 @@ function renderFileFilterChips(files) {
     const isNoise = f.isNoise;
 
     return `
-      <button data-action="focus" data-value="${escapeHtml(f.path)}"
+      <button type="button" data-action="focus" data-value="${escapeHtml(f.path)}" aria-pressed="${isActive}"
               title="${escapeHtml(f.path)}"
               class="px-2 py-0.5 rounded text-[10px] font-mono transition shrink-0 flex items-center gap-1 ${
                 isActive
@@ -1017,7 +1056,9 @@ function renderFileFilterChips(files) {
     `;
   }).join('');
 
+  const focused = focusedRow(container);
   container.innerHTML = html;
+  restoreFocus(container, focused);
 }
 
 // Only changes what the diff panel shows; the mentor conversation keeps its scope.
@@ -1375,6 +1416,7 @@ async function startMentorAnalysis(mode, customPrompt = '', resetSession = false
 
   statusBar.classList.remove('hidden');
   statusText.textContent = '导师正在分析架构意图与代码实相...';
+  announce('导师正在分析');
 
   // 每一轮都追加用户气泡：自由提问显示原文，精读动作显示动作名
   const userBubble = document.createElement('div');
@@ -1575,6 +1617,7 @@ async function startMentorAnalysis(mode, customPrompt = '', resetSession = false
             statusBar.classList.add('hidden');
             settleTurn();
             saveCurrentSession();
+            announce('导师回答完成');
           }
         }
       }
@@ -1592,6 +1635,7 @@ async function startMentorAnalysis(mode, customPrompt = '', resetSession = false
       notice.className = 'text-[var(--text-muted)] text-xs mt-2';
       notice.textContent = '已终止生成，未保存未完成的回答';
       article.appendChild(notice);
+      announce('已终止生成');
     } else {
       const staleSnapshot = err.status === 409 && /快照/.test(err.message);
       if (staleSnapshot) {
@@ -1606,6 +1650,7 @@ async function startMentorAnalysis(mode, customPrompt = '', resetSession = false
         ? `分析快照已失效: ${err.message}。下一次精读或提问会重新建立快照。`
         : `分析失败: ${err.message}`;
       article.appendChild(notice);
+      announce(staleSnapshot ? '分析快照已失效' : `分析失败: ${err.message}`);
     }
   } finally {
     clearTimeout(renderTimer);
@@ -1616,6 +1661,13 @@ async function startMentorAnalysis(mode, customPrompt = '', resetSession = false
       renderMentorScope();
     }
   }
+}
+
+// Screen readers hear the start and end of an analysis through a hidden status
+// region; the visible status bar disappears without being announced.
+function announce(message) {
+  const live = document.getElementById('mentor-live');
+  if (live) live.textContent = message;
 }
 
 // "本次依据": which diff files, documents and source lines the model was given.

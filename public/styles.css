@@ -372,6 +372,12 @@ body {
 }
 
 button:disabled { opacity: .45; cursor: not-allowed; }
+/* 键盘焦点：按钮、仓库与提交行、下拉框和折叠摘要都显示焦点环；输入框沿用边框变色 */
+button:focus-visible, [role="button"]:focus-visible, select:focus-visible, summary:focus-visible, a:focus-visible {
+  outline: 2px solid var(--text-primary); outline-offset: 2px;
+}
+/* 提交列表没有内边距，焦点环画在行内，避免被滚动容器裁掉 */
+#commit-list [role="button"]:focus-visible { outline-offset: -2px; }
 #panel-tabs { display: none; }
 #workspace, #mentor-panel, #mentor-input { min-width: 0; min-height: 0; }
 #model-select { max-width: 230px; }
@@ -399,6 +405,7 @@ button:disabled { opacity: .45; cursor: not-allowed; }
   #model-select { width: 100%; min-width: 0; }
   #model-status { max-width: 90px; }
   #keeper-detail-popover { right: auto; left: 0; max-width: calc(100vw - 24px); }
+  #keeper-token-pill { width: 100%; } /* 按钮默认按内容收缩，窄屏时保持原来的通栏宽度 */
 }
 @media (max-width: 1100px) {
   body { height: 100dvh; }
