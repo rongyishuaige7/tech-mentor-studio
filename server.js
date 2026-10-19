@@ -4,7 +4,7 @@ import { mentorHandler } from './lib/mentor.js';
 import { localAccess, RepositoryRegistry, httpError, redactKnownSecret } from './lib/security.js';
 import express from 'express';
 import { getKeeperStats } from './lib/keeper.js';
-import { getConfig } from './lib/config.js';
+import { getConfig, defaultConfigDir } from './lib/config.js';
 import { buildFingerprint, pickDirectory } from './lib/runtime.js';
 import { requestLifecycle } from './lib/stream.js';
 import fs from 'fs';
@@ -18,6 +18,9 @@ const __dirname = path.dirname(__filename);
 export function createApp(options = {}) {
 const app = express();
 const config = getConfig(options, __dirname);
+// Paths only: the key itself never reaches a log.
+if (config.proxyKeySource === 'legacy') console.warn(`代理认证仍从 ${config.proxyKeyFile} 读取；项目目录可能随 iCloud 等同步，建议移到 ${path.join(defaultConfigDir(), 'proxy-key')}（权限 600）`);
+if (config.proxyKeyLoose) console.warn(`代理认证文件 ${config.proxyKeyFile} 对其他用户可读，建议执行 chmod 600`);
 const fingerprint = buildFingerprint(__dirname);
 const PROXY_KEY = config.proxyKey;
 const fetchImpl = options.fetchImpl || fetch;
@@ -218,7 +221,7 @@ app.get('/api/repos/:repoId/diff', async (req, res) => {
 });
 
 app.get('/api/models', async (req, res) => {
-  if (!PROXY_KEY) return res.status(503).json({ success: false, models: [], error: '尚未配置代理认证，请设置 PROXY_KEY 或 data/proxy-key' });
+  if (!PROXY_KEY) return res.status(503).json({ success: false, models: [], error: '尚未配置代理认证，请设置 PROXY_KEY 或 ~/.config/tech-mentor-studio/proxy-key' });
   try {
     const response = await fetchImpl(config.modelsUrl, {
       headers: { Authorization: `Bearer ${PROXY_KEY}` }, signal: AbortSignal.timeout(config.modelsTimeout)

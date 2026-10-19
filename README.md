@@ -21,7 +21,15 @@ PORT=3400 NO_BROWSER=1 npm start
 
 ## 配置代理
 
-认证从 `PROXY_KEY` 环境变量或本地 `data/proxy-key` 读取，环境变量优先。本地文件应设为权限 600；它和关注列表都不提交到 Git。已经配置的用户无需更换认证。
+认证按以下顺序读取：`PROXY_KEY` 环境变量；`~/.config/tech-mentor-studio/proxy-key`（如果 `XDG_CONFIG_HOME` 设置为绝对路径，则改用该目录下的 `tech-mentor-studio/proxy-key`）；旧位置 `data/proxy-key`。默认位置在项目目录之外：项目放在 iCloud 同步的桌面上时，`data/` 下的文件即使权限为 600 也会被上传。如果仍从旧位置读取，或者认证文件对其他用户可读，启动日志会给出提示，但不会输出认证内容。旧位置仍然可用，已经配置的用户无需更换认证。要迁移，移动文件即可：
+
+```bash
+mkdir -p -m 700 ~/.config/tech-mentor-studio
+mv data/proxy-key ~/.config/tech-mentor-studio/proxy-key
+chmod 600 ~/.config/tech-mentor-studio/proxy-key
+```
+
+认证文件和关注列表都不提交到 Git。
 
 缺少配置、代理认证失败、查询超时或没有模型时，界面显示原因并禁用分析。修好代理后点击“重试模型”。可选择的模型均来自代理实际返回的列表，选择偏好保存在浏览器中。
 
@@ -30,7 +38,7 @@ PORT=3400 NO_BROWSER=1 npm start
 | `PORT` | 3300 | 只监听 `127.0.0.1` 的服务端口 |
 | `PROXY_URL` | `http://127.0.0.1:8317/v1/chat/completions` | 分析接口 |
 | `MODELS_URL` | 将分析地址末尾 `/chat/completions` 替换为 `/models` | 模型列表 |
-| `PROXY_KEY` | 读取 `data/proxy-key` | 代理认证 |
+| `PROXY_KEY` | 依次读取 `~/.config/tech-mentor-studio/proxy-key`、`data/proxy-key` | 代理认证 |
 | `KEEPER_DB_PATH` | `/opt/homebrew/var/cpa-usage-keeper/app.db` | SQLite 只读计量 |
 | `MODELS_TIMEOUT_MS` | 5000 | 模型列表超时，单位毫秒 |
 | `ANALYSIS_TIMEOUT_MS` | 180000 | 分析总超时，单位毫秒 |

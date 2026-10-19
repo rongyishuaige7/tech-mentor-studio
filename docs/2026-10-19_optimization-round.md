@@ -116,3 +116,14 @@
   - 真实 gitleaks 用例：仓库里同时放 `.gitleaks.toml` 白名单和行内放行注释，这个密钥仍被替换。没有安装 gitleaks 的环境会跳过这个用例。
   - 新增的 5 个测试在旧代码上都失败，在新代码上都通过。
   - `npm run check` 通过；`npm test` 85 项全部通过，其中包括真实 gitleaks 用例；`npm run test:browser` 9 项全部通过。
+- 第 6 片 代理认证位置：
+  - 读取顺序：`PROXY_KEY`；`$XDG_CONFIG_HOME/tech-mentor-studio/proxy-key`，未设置时为 `~/.config/tech-mentor-studio/proxy-key`；最后是旧位置 `data/proxy-key`。
+  - 如果仍从旧位置读取，或者认证文件对其他用户可读，启动日志会给出文件路径和建议，不输出认证内容。
+  - 本机迁移：
+    - 已确认目标位置原本没有文件，其他配置也没有引用旧路径。
+    - 用 `mv -n` 把 `data/proxy-key` 移到 `~/.config/tech-mentor-studio/proxy-key`，目录权限为 700，文件权限为 600。
+    - 迁移后，应用从新位置读取，没有产生警告。`GET /api/models` 只读查询本机代理，返回 200，共 27 个模型。
+    - 要恢复原状，执行 `mv ~/.config/tech-mentor-studio/proxy-key data/proxy-key`。
+    - 移动只是不再继续同步。iCloud 可能还保留着已删除文件的历史副本；本轮没有轮换认证。
+  - 新增的 3 个测试在旧代码上都失败，在新代码上都通过。
+  - `npm run check` 通过；`npm test` 89 项全部通过。本片只改了服务端，没有运行浏览器回归。
