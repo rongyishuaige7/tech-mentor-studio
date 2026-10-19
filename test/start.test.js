@@ -5,7 +5,28 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { gitFixture } from './git-helper.js';
 import { appFixture } from './http-helper.js';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { assetStamp, assetsUpToDate } from '../lib/runtime.js';
 const execute = promisify(execFile);
+
+test('the launcher skips the asset build only while inputs and outputs still match', t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mentor-assets-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const write = (name, text) => { fs.mkdirSync(path.dirname(path.join(root, name)), { recursive: true }); fs.writeFileSync(path.join(root, name), text); };
+  for (const name of ['package.json', 'package-lock.json', 'scripts/build-assets.js', 'assets/tailwind.css', 'tailwind.config.cjs', 'public/index.html', 'public/app.js']) write(name, `${name}\n`);
+  for (const name of ['purify.js', 'marked.js', 'lucide.js', 'highlight.js', 'highlight.css', 'highlight-light.css', 'mermaid.js', 'tailwind.css']) write(`public/vendor/${name}`, 'built\n');
+  assert.equal(assetsUpToDate(root), false);
+  write('public/vendor/versions.json', JSON.stringify({ stamp: assetStamp(root) }));
+  assert.equal(assetsUpToDate(root), true);
+  write('public/app.js', 'changed\n');
+  assert.equal(assetsUpToDate(root), false);
+  write('public/app.js', 'public/app.js\n');
+  assert.equal(assetsUpToDate(root), true);
+  fs.rmSync(path.join(root, 'public/vendor/mermaid.js'));
+  assert.equal(assetsUpToDate(root), false);
+});
 
 test('launcher refuses an unrelated listener and leaves it serving requests', async t => {
   const server = http.createServer((req, res) => { res.writeHead(200); res.end('unrelated-service'); });

@@ -145,6 +145,23 @@ test('Keeper polling pauses while the page is hidden and refreshes on return', a
   await expect.poll(() => polls).toBe(5);
 });
 
+test('Mermaid loads only when an answer contains a diagram', async ({ page }) => {
+  const loaded = [];
+  page.on('request', request => { if (request.url().includes('/vendor/mermaid.js')) loaded.push(request.url()); });
+  await fixture(page);
+  let text = '普通回答';
+  await page.route('**/api/mentor/analyze', route => route.fulfill({ contentType: 'text/event-stream', body: stream(text) }));
+  await page.goto('/');
+  await page.locator('#btn-walkthrough').click();
+  await expect(page.locator('#mentor-status-bar')).toBeHidden();
+  expect(loaded).toHaveLength(0);
+  text = '```mermaid\nflowchart TD\nA[代码] --> B[理解]\n```';
+  await page.locator('#mentor-input').fill('画一张图');
+  await page.locator('#btn-submit-prompt').click();
+  await expect(page.locator('.mermaid svg')).toHaveCount(1);
+  expect(loaded).toHaveLength(1);
+});
+
 test('large Diff pages retain correct line numbers and full copy', async ({ page, context }) => {
   await context.grantPermissions(['clipboard-read', 'clipboard-write']);
   const patch = 'diff --git a/code.js b/code.js\nnew file mode 100644\n--- /dev/null\n+++ b/code.js\n@@ -0,0 +1,4500 @@\n'

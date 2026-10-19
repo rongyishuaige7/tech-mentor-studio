@@ -280,6 +280,23 @@ function toggleTheme() {
 
 const mermaidTheme = () => document.documentElement.classList.contains('dark') ? 'dark' : 'neutral';
 
+// Mermaid is about 3.4 MB; load it the first time an answer contains a diagram.
+let mermaidLoading = null;
+function loadMermaid() {
+  if (window.mermaid) return Promise.resolve();
+  mermaidLoading ||= new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = '/vendor/mermaid.js';
+    script.onload = () => {
+      mermaid.initialize({ startOnLoad: false, theme: mermaidTheme(), securityLevel: 'strict' });
+      resolve();
+    };
+    script.onerror = () => { mermaidLoading = null; reject(new Error('Mermaid 加载失败')); };
+    document.head.appendChild(script);
+  });
+  return mermaidLoading;
+}
+
 // A diagram keeps the colors of the theme it was drawn in. Redraw the ones
 // drawn in another theme from the source kept on their container.
 async function redrawMermaid(root = document) {
@@ -1826,6 +1843,10 @@ async function postProcessArticle(article) {
 
   // 3. 渲染 Mermaid 图表
   const mermaidBlocks = article.querySelectorAll('pre code.language-mermaid');
+  if (mermaidBlocks.length > 0) {
+    // Without Mermaid the diagram source stays visible as a code block.
+    try { await loadMermaid(); } catch (error) { console.warn('Mermaid unavailable:', error); }
+  }
   if (mermaidBlocks.length > 0 && window.mermaid) {
     for (let i = 0; i < mermaidBlocks.length; i++) {
       const block = mermaidBlocks[i];

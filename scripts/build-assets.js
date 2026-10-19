@@ -4,8 +4,11 @@ import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
 import { compile } from '@tailwindcss/node';
 import { Scanner } from '@tailwindcss/oxide';
+import { assetStamp } from '../lib/runtime.js';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
+// Taken before building, so an input edited mid-build makes the next start rebuild.
+const stamp = assetStamp(root);
 const vendor = path.join(root, 'public/vendor');
 fs.mkdirSync(vendor, { recursive: true });
 const assets = {
@@ -32,4 +35,4 @@ const compiler = await compile(fs.readFileSync(path.join(root, 'assets/tailwind.
 const scanner = new Scanner({ sources: compiler.sources });
 fs.writeFileSync(path.join(vendor, 'tailwind.css'), compiler.build(scanner.scan()));
 const manifest = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
-fs.writeFileSync(path.join(vendor, 'versions.json'), JSON.stringify({ dependencies: manifest.dependencies, build: 'local' }, null, 2));
+fs.writeFileSync(path.join(vendor, 'versions.json'), JSON.stringify({ dependencies: manifest.dependencies, build: 'local', stamp }, null, 2));

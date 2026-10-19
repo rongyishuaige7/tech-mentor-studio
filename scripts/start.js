@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync, spawn } from 'node:child_process';
-import { buildFingerprint } from '../lib/runtime.js';
+import { buildFingerprint, assetsUpToDate } from '../lib/runtime.js';
 
 const root = fs.realpathSync(fileURLToPath(new URL('..', import.meta.url)));
 const port = Number(process.env.PORT || 3300);
@@ -55,7 +55,8 @@ try {
     } else throw new Error(`端口 ${port} 已被其他服务或旧版本占用；未停止任何进程。请使用空闲 PORT，或手动重启已确认的项目服务`);
   } else {
     if (!fs.existsSync(path.join(root, 'node_modules/express'))) execFileSync('npm', ['ci'], { cwd: root, stdio: 'inherit' });
-    execFileSync('npm', ['run', 'build'], { cwd: root, stdio: 'inherit' });
+    if (assetsUpToDate(root)) console.log('前端资源未变化，跳过构建');
+    else execFileSync('npm', ['run', 'build'], { cwd: root, stdio: 'inherit' });
     // Refresh port ownership after building; a new listener must never be killed.
     if (listeners().length) throw new Error(`端口 ${port} 在构建期间被占用，请换用空闲 PORT`);
     const child = spawn(process.execPath, ['server.js'], { cwd: root, env: { ...process.env, PORT: String(port) }, stdio: 'inherit' });
