@@ -385,6 +385,39 @@ test('the diff panel renders from files alone, without a duplicated diff text', 
   assert.match(nodes.get('diff-content').innerHTML, /diff-line-add[^]*\+new/);
 });
 
+test('the streaming split keeps open code fences and indented continuations in the tail', () => {
+  const { context } = loadClient(keeperResponse);
+  const split = text => context.stableMarkdownSplit(text, 0);
+  assert.equal(split('# a\n\nparagraph\n\nnext'), '# a\n\nparagraph\n\n'.length);
+  assert.equal(split('intro\n\n```js\nconst a = 1;\n\nconst b = 2;'), 'intro\n\n'.length);
+  assert.equal(split('intro\n\n```js\nx\n```\n\nafter'), 'intro\n\n```js\nx\n```\n\n'.length);
+  assert.equal(split('- item\n\n  continued'), 0);
+  assert.equal(split('para\n\n'), 0);
+  assert.equal(context.stableMarkdownSplit('a\n\nb\n\nc', 3), 'a\n\nb\n\n'.length);
+});
+
+test('streaming renders finished blocks once and re-renders only the open tail', async () => {
+  const blocks = Array.from({ length: 10 }, (_, i) => `## 第 ${i} 节\n\n${'正文内容 '.repeat(40)}\n\n`);
+  const encoder = new TextEncoder();
+  const body = new ReadableStream({ async start(controller) {
+    for (const block of blocks) {
+      controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'chunk', text: block })}\n\n`));
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    controller.enqueue(encoder.encode('data: {"type":"finished"}\n\n'));
+    controller.close();
+  } });
+  const { context, get } = loadClient(url => url === '/api/mentor/analyze' ? Promise.resolve(new Response(body)) : keeperResponse());
+  const parsed = []; context.marked.parse = text => { parsed.push(text.length); return text; };
+  await context.startMentorAnalysis('walkthrough', '', true);
+  const full = blocks.join('');
+  assert.equal(get('conversationHistory[0].content'), full);
+  assert.equal(parsed.at(-1), full.length);
+  assert.ok(parsed.length > 3, 'expected renders while streaming');
+  const streaming = parsed.slice(0, -1).reduce((sum, n) => sum + n, 0);
+  assert.ok(streaming < full.length * 3, `streaming parsed ${streaming} characters for a ${full.length}-character answer`);
+});
+
 test('code references resolve only to diff files, including paths run into Chinese prose', () => {
   const { context } = loadClient(keeperResponse);
   const paths = ['lib/mentor.js', 'public/app.js', 'test/app.js', '目录/中文.js'];

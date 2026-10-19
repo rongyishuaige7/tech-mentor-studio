@@ -203,6 +203,31 @@ function renderMarkdown(text) {
   return DOMPurify.sanitize(marked.parse(text), { USE_PROFILES: { html: true }, ALLOW_DATA_ATTR: false, FORBID_TAGS: ['style', 'form', 'input', 'button', 'iframe'], FORBID_ATTR: ['style', 'id', 'name'] });
 }
 
+// Where the finished part of a streaming answer ends, searching from `from`:
+// the start of the last line that follows a blank line, begins without
+// indentation and lies outside a code fence. Everything before it is complete
+// top-level blocks; later text cannot change how they render, except in rare
+// cases (loose lists, later link definitions) that the final render corrects.
+function stableMarkdownSplit(text, from = 0) {
+  const lines = text.slice(from).split('\n');
+  let offset = from, fence = null, previousBlank = true, split = from;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (fence) {
+      // Only a complete line can close the fence; the last line may be partial.
+      const close = /^ {0,3}(`{3,}|~{3,})\s*$/.exec(line);
+      if (close && i < lines.length - 1 && close[1][0] === fence[0] && close[1].length >= fence.length) fence = null;
+    } else {
+      if (offset > from && previousBlank && /^\S/.test(line)) split = offset;
+      const open = /^ {0,3}(`{3,}|~{3,})/.exec(line);
+      if (open) fence = open[1];
+    }
+    previousBlank = !fence && line.trim() === '';
+    offset += line.length + 1;
+  }
+  return split;
+}
+
 function initTheme() {
   let savedTheme = 'dark';
   try {
@@ -1370,11 +1395,33 @@ async function startMentorAnalysis(mode, customPrompt = '', resetSession = false
   let currentTurnUsage = null;
   let finalized = false;
   let renderTimer = null;
-  const flushArticle = () => {
+  // While streaming, finished top-level blocks are rendered once into `stableEl`
+  // and only the open tail is re-rendered, so a long answer no longer costs a
+  // full parse on every flush. The finished answer is rendered whole once.
+  let stableEnd = 0, stableEl = null, tailEl = null, renderDelay = 80;
+  const flushArticle = (final = false) => {
     clearTimeout(renderTimer); renderTimer = null;
     if (!ownsRequest()) return;
     const atBottom = chatStream.scrollHeight - chatStream.scrollTop - chatStream.clientHeight < 100;
-    article.innerHTML = renderMarkdown(currentTurnMarkdown);
+    const started = Date.now();
+    if (final) {
+      article.innerHTML = renderMarkdown(currentTurnMarkdown);
+      stableEl = tailEl = null; stableEnd = 0;
+    } else {
+      if (!stableEl) {
+        article.innerHTML = '';
+        stableEl = document.createElement('div'); tailEl = document.createElement('div');
+        article.appendChild(stableEl); article.appendChild(tailEl);
+      }
+      const split = stableMarkdownSplit(currentTurnMarkdown, stableEnd);
+      if (split > stableEnd) {
+        stableEl.insertAdjacentHTML('beforeend', renderMarkdown(currentTurnMarkdown.slice(stableEnd, split)));
+        stableEnd = split;
+      }
+      tailEl.innerHTML = renderMarkdown(currentTurnMarkdown.slice(stableEnd));
+    }
+    // Back off when a render gets slow so the page stays responsive.
+    renderDelay = Math.min(500, Math.max(80, (Date.now() - started) * 4));
     if (atBottom) chatStream.scrollTop = chatStream.scrollHeight;
   };
 
@@ -1456,14 +1503,14 @@ async function startMentorAnalysis(mode, customPrompt = '', resetSession = false
             statusText.textContent = event.message;
           } else if (event.type === 'chunk' && !finalized) {
             currentTurnMarkdown += event.text;
-            renderTimer ||= setTimeout(flushArticle, 80);
+            renderTimer ||= setTimeout(flushArticle, renderDelay);
           } else if (event.type === 'usage') {
             currentTurnUsage = event.usage;
           } else if (event.type === 'error') {
             throw new Error(event.message || '分析失败');
           } else if ((event.type === 'finished' || event.type === 'done') && !finalized) {
             finalized = true;
-            flushArticle();
+            flushArticle(true);
             await postProcessArticle(article);
             if (!isCurrent()) return;
             if (mentorResolvedTarget) {
@@ -1506,7 +1553,7 @@ async function startMentorAnalysis(mode, customPrompt = '', resetSession = false
     }
   } catch (err) {
     if (!ownsRequest()) return;
-    flushArticle();
+    flushArticle(true);
     if (!currentTurnMarkdown) article.innerHTML = '';
     if (controller.signal.aborted) {
       const notice = document.createElement('p');

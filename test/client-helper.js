@@ -14,6 +14,7 @@ export function loadClient(fetcher) {
         contains(x) { return this.values.has(x); }
       },
       appendChild(child) { this.children.push(child); },
+      insertAdjacentHTML(position, html) { this.innerHTML += html; },
       querySelectorAll() { return []; }, addEventListener() {}
     };
   }
