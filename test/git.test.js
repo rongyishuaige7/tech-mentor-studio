@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { gitFixture } from './git-helper.js';
 import { loadDiff, getCommits, getPresets, resolveTarget, runGit, getStatus } from '../lib/git.js';
-import { decodeGitPath, parseDiffFiles, getCleanDiffForMentor, newFilePatch, numberDiffLines } from '../lib/diff.js';
+import { decodeGitPath, parseDiffFiles, getCleanDiffForMentor, newFilePatch, numberDiffLines, generatedDir } from '../lib/diff.js';
 
 test('unborn repository combines staged and untracked final working contents', async t => {
   const { root, git, write } = gitFixture(t);
@@ -147,6 +147,31 @@ test('unquoted paths containing " b/" keep their name when no content lines foll
   assert.deepEqual((await loadDiff(root)).files.map(file => file.path), ['x b/y.js']);
   const [copied] = parseDiffFiles('diff --git a/src/a.js b/lib/a.js\nsimilarity index 100%\ncopy from src/a.js\ncopy to lib/a.js\n');
   assert.equal(copied.path, 'lib/a.js'); assert.equal(copied.oldPath, 'src/a.js');
+});
+
+test('untracked dependency and cache directories are counted, not read', async t => {
+  const { root, write, commit } = gitFixture(t);
+  write('base.js', 'base\n'); write('web/node_modules/tracked/index.js', 'tracked\n'); commit('base');
+  fs.appendFileSync(path.join(root, 'web/node_modules/tracked/index.js'), 'more\n');
+  for (let i = 0; i < 300; i++) write(`web/node_modules/pkg${i}/index.js`, 'module.exports = 1;\n');
+  write('.venv/lib/site.py', 'x = 1\n'); write('src/real.js', 'real\n');
+  // Reading this file would produce a per-file warning; skipping it must not.
+  fs.chmodSync(path.join(root, 'web/node_modules/pkg0/index.js'), 0o000);
+  const data = await loadDiff(root);
+  assert.deepEqual(data.files.map(file => file.path).sort(), ['src/real.js', 'web/node_modules/tracked/index.js']);
+  assert.equal(data.files.find(file => file.path.includes('tracked')).isNoise, true);
+  assert.deepEqual(data.warnings, ['".venv/"：1 个依赖或缓存文件未读取', '"web/node_modules/"：300 个依赖或缓存文件未读取']);
+  assert.equal(generatedDir('a/node_modules/b/node_modules/c.js'), 'a/node_modules/');
+  assert.equal(generatedDir('src/venvironment/x.js'), null);
+  assert.equal(generatedDir('build/out.js'), null);
+});
+
+test('the 8 MiB worktree limit still applies across many small untracked files', async t => {
+  const { root, write, commit } = gitFixture(t);
+  write('base.js', 'base\n'); commit('base');
+  const content = ('x'.repeat(99) + '\n').repeat(2900);
+  for (let i = 0; i < 30; i++) write(`gen/f${i}.txt`, content);
+  await assert.rejects(loadDiff(root), error => error.status === 413);
 });
 
 test('mentor diff lines carry real new-file and old-file line numbers', () => {
