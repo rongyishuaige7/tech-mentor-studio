@@ -101,3 +101,18 @@
   - 新增的主题测试在旧版本上失败（3.74:1），在新版本上通过。
   - `npm run check` 通过；`npm test` 78 项全部通过；`npm run test:browser` 9 项全部通过。
   - 本片没有处理 `--text-subtle` 和主色按钮上的白字，也没有测量。这里的对比度是计算值，完整的 WCAG 结论还需要用辅助技术实测并做人工审查。
+- 第 5 片 敏感文件名与内容扫描：
+  - 新增的敏感文件名：`.envrc`、`.git-credentials`、`auth.json`、`*.tfvars`、`.pgpass`、`.htpasswd`、`secrets.{json,yaml,yml,toml,env}`、服务账号 JSON、`*.kdbx`、`*.jks`。`docs/secrets.md`、`src/auth.js` 这类普通文件不受影响。
+  - 新增 `lib/secrets.js`：
+    - 先对快照上下文运行 `gitleaks stdin`，每轮请求再对历史和问题各扫描一次，命中的值替换为 `[REDACTED:规则]`。
+    - gitleaks 在空的临时目录中运行，并加上 `--ignore-gitleaks-allow`。实测证实：在工作目录中放 `.gitleaks.toml`、在代码中写 `gitleaks:allow`，都能让命中消失，所以被分析的仓库不能用这两种方式放行自己的密钥。
+    - 扫描 70 KB 约 34 ms。
+    - 结果只保存在内存中，不写文件，也不记日志。
+  - 降级与失败：
+    - 未安装 gitleaks 时照常分析，“本次依据”里注明“未做密钥扫描”。
+    - 扫描失败、超时或结果无法解析时返回错误，不调用模型。
+    - 命中的值横跨两条消息时拒绝发送。
+  - 测试：普通测试默认注入一个“未安装”的扫描器，保证结果不受本机环境影响；`secrets.test.js` 覆盖替换、失败时停止、未安装三种情况。
+  - 真实 gitleaks 用例：仓库里同时放 `.gitleaks.toml` 白名单和行内放行注释，这个密钥仍被替换。没有安装 gitleaks 的环境会跳过这个用例。
+  - 新增的 5 个测试在旧代码上都失败，在新代码上都通过。
+  - `npm run check` 通过；`npm test` 85 项全部通过，其中包括真实 gitleaks 用例；`npm run test:browser` 9 项全部通过。

@@ -238,7 +238,7 @@ app.get('/api/models', async (req, res) => {
   }
 });
 
-app.post('/api/mentor/analyze', mentorHandler({ registry, config, fetchImpl, snapshots: options.snapshots }));
+app.post('/api/mentor/analyze', mentorHandler({ registry, config, fetchImpl, snapshots: options.snapshots, secretScanner: options.secretScanner }));
 
 app.get('/api/health', (req, res) => res.json({ success: true, service: 'tech-mentor-studio', projectRoot: __dirname, fingerprint }));
 app.use((error, req, res, next) => {

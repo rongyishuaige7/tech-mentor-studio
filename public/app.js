@@ -1398,6 +1398,7 @@ async function startMentorAnalysis(mode, customPrompt = '', resetSession = false
   let renewing = false;
   let snapshotRenewed = false;
   let turnEvidence = null;
+  let turnPromptRedacted = 0;
 
   try {
     let response;
@@ -1450,6 +1451,7 @@ async function startMentorAnalysis(mode, customPrompt = '', resetSession = false
             snapshotRenewed = renewing || Boolean(event.renewed);
             if (typeof event.instruction === 'string' && event.instruction) turnInstruction = event.instruction;
             if (event.evidence && typeof event.evidence === 'object') turnEvidence = event.evidence;
+            if (Number.isInteger(event.promptRedacted) && event.promptRedacted > 0) turnPromptRedacted = event.promptRedacted;
           } else if (event.type === 'status') {
             statusText.textContent = event.message;
           } else if (event.type === 'chunk' && !finalized) {
@@ -1474,6 +1476,12 @@ async function startMentorAnalysis(mode, customPrompt = '', resetSession = false
               footerEl.appendChild(evidenceNotice);
             }
             if (turnEvidence) footerEl.appendChild(renderEvidence(turnEvidence));
+            if (turnPromptRedacted) {
+              const note = document.createElement('p');
+              note.className = 'text-[10px] text-[var(--text-muted)] mt-1';
+              note.textContent = `本轮提问与历史中 ${turnPromptRedacted} 个疑似密钥已替换后发送`;
+              footerEl.appendChild(note);
+            }
             if (currentTurnUsage) {
               const numeric = key => Math.max(0, Number(currentTurnUsage[key]) || 0);
               const usage = document.createElement('div');
@@ -1543,7 +1551,10 @@ function renderEvidence(evidence) {
   const details = document.createElement('details');
   details.className = 'evidence-details';
   const summary = document.createElement('summary');
-  summary.textContent = `本次依据：Diff ${diffFiles.length} 个文件${omitted ? `（另有 ${omitted} 个未展示）` : ''} · 文档 ${documents.length} 份 · 源码 ${sources.length} 个文件${cut ? ` · ${cut} 处截断` : ''}`;
+  const scan = evidence.secretScan && typeof evidence.secretScan === 'object' ? evidence.secretScan : null;
+  const redacted = Math.max(0, Number(scan?.redacted) || 0);
+  const scanNote = !scan ? '' : scan.available === false ? ' · 未做密钥扫描' : redacted ? ` · ${redacted} 个疑似密钥已替换` : '';
+  summary.textContent = `本次依据：Diff ${diffFiles.length} 个文件${omitted ? `（另有 ${omitted} 个未展示）` : ''} · 文档 ${documents.length} 份 · 源码 ${sources.length} 个文件${cut ? ` · ${cut} 处截断` : ''}${scanNote}`;
   details.appendChild(summary);
   const section = (title, items, describe) => {
     if (!items.length) return;
@@ -1562,6 +1573,11 @@ function renderEvidence(evidence) {
   section('Diff', diffFiles, item => `${item.path}${item.truncated ? '（已截断）' : ''}`);
   section('文档', documents, item => `${item.path}${item.truncated ? `（第 ${spans(item.ranges)} 行，已截断）` : ''}`);
   section('源码', sources, item => `${item.path}${item.truncated ? `：第 ${spans(item.ranges)} 行` : '：全文'}`);
+  if (scan) {
+    const rules = Array.isArray(scan.rules) ? scan.rules.filter(rule => typeof rule === 'string') : [];
+    section('密钥扫描', [{ path: scan.available === false ? '未安装 gitleaks，发给模型的内容没有做密钥扫描'
+      : redacted ? `gitleaks 发现 ${redacted} 个疑似密钥，已替换为 [REDACTED]${rules.length ? `（${rules.join('、')}）` : ''}` : 'gitleaks 未发现疑似密钥' }], item => item.path);
+  }
   const warnings = Array.isArray(evidence.warnings) ? evidence.warnings.filter(text => typeof text === 'string') : [];
   const more = Math.max(0, (Number(evidence.warningCount) || warnings.length) - warnings.length);
   section('提示', warnings.map(text => ({ path: text })).concat(more ? [{ path: `另有 ${more} 条提示` }] : []), item => item.path);

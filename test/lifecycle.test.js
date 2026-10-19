@@ -360,6 +360,22 @@ test('the client colors text with theme variables, not fixed palette shades', ()
   assert.deepEqual(source.match(/\b(?:text|bg|border)-(?:slate|rose|emerald|amber|indigo)-\d+/g) ?? [], []);
 });
 
+test('the evidence summary says when content was not scanned or values were replaced', async () => {
+  const base = { diff: { files: [], omitted: 0 }, documents: [], sources: [], warnings: [], warningCount: 0 };
+  const footerOf = async extra => {
+    const { context, nodes } = analyzeClient(() => answer('snap', 'q', extra));
+    await context.startMentorAnalysis('walkthrough', '', false);
+    return [...nodes.values()].find(node => node.id.startsWith('footer-'));
+  };
+  const summaryOf = async secretScan => (await footerOf({ evidence: { ...base, secretScan } }))
+    .children.find(child => child.className === 'evidence-details').children[0].textContent;
+  assert.match(await summaryOf({ available: false, redacted: 0, rules: [] }), / · 未做密钥扫描$/);
+  assert.match(await summaryOf({ available: true, redacted: 2, rules: ['generic-api-key'] }), / · 2 个疑似密钥已替换$/);
+  assert.doesNotMatch(await summaryOf({ available: true, redacted: 0, rules: [] }), /密钥/);
+  const footer = await footerOf({ promptRedacted: 1 });
+  assert.ok(footer.children.some(child => child.textContent === '本轮提问与历史中 1 个疑似密钥已替换后发送'));
+});
+
 test('code references resolve only to diff files, including paths run into Chinese prose', () => {
   const { context } = loadClient(keeperResponse);
   const paths = ['lib/mentor.js', 'public/app.js', 'test/app.js', '目录/中文.js'];
