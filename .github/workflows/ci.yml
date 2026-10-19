@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  node:
+    name: Check, test, build and audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+      # Tests use the sqlite3 CLI (Keeper) and lsof (launcher). gitleaks is
+      # optional: without it the real-scanner test is skipped.
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends sqlite3 lsof
+      - run: npm ci
+      - run: npm run check
+      - run: npm test
+      - run: npm run build
+      - run: npm audit
+
+  browser:
+    name: Browser regression
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends lsof
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - name: Start the service on 3301
+        run: |
+          PORT=3301 NO_BROWSER=1 SCAN_ROOTS_JSON="$(node -p 'JSON.stringify([process.cwd()])')" nohup npm start > server.log 2>&1 &
+          for i in $(seq 1 90); do grep -q '服务已验证' server.log && exit 0; sleep 1; done
+          cat server.log; exit 1
+      - run: npm run test:browser
+      - if: failure()
+        run: cat server.log
