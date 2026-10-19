@@ -96,7 +96,7 @@ test('out of order diff response cannot replace the current repository', async (
   await new Promise(resolve => setImmediate(resolve));
   const second = context.fetchDiff('B', 'commitB');
   await new Promise(resolve => setImmediate(resolve));
-  const response = file => ({ json: async () => ({ success: true, files: [{ path: file, patch: 'patch', additions: 1, deletions: 0 }], diffText: 'patch' }) });
+  const response = file => ({ json: async () => ({ success: true, files: [{ path: file, patch: 'patch', additions: 1, deletions: 0 }] }) });
   pending[1](response('B.js')); await second;
   pending[0](response('A.js')); await first;
   assert.equal(get('currentDiffFiles[0].path'), 'B.js');
@@ -139,7 +139,7 @@ test('viewing another file keeps the conversation and its scope; switching targe
         { type: 'chunk', text: 'answer' }, { type: 'finished' }
       ]));
     }
-    if (url.includes('/diff')) return Promise.resolve({ json: async () => ({ success: true, files: [], diffText: '' }) });
+    if (url.includes('/diff')) return Promise.resolve({ json: async () => ({ success: true, files: [] }) });
     return keeperResponse();
   });
   await context.startMentorAnalysis('walkthrough', '', true);
@@ -168,7 +168,7 @@ test('returning to a repository restores its target, viewed file and that target
     }) });
     if (url.includes('/api/repos/B/diff')) return Promise.resolve({ json: async () => ({
       success: true, files: [{ path: 'file.js', patch: 'diff --git a/file.js b/file.js\n+code\n', additions: 1, deletions: 0 }],
-      diffText: 'diff --git a/file.js b/file.js\n+code\n', statText: '1 个文件，+1 / -0'
+      statText: '1 个文件，+1 / -0'
     }) });
     return keeperResponse();
   });
@@ -221,7 +221,7 @@ test('a conversation about a file that disappeared ends with a visible notice', 
     }) });
     if (url.includes('/api/repos/B/diff')) return Promise.resolve({ json: async () => ({
       success: true, files: [{ path: 'file.js', patch: 'diff --git a/file.js b/file.js\n+code\n', additions: 1, deletions: 0 }],
-      diffText: 'diff --git a/file.js b/file.js\n+code\n', statText: '1 个文件，+1 / -0'
+      statText: '1 个文件，+1 / -0'
     }) });
     return keeperResponse();
   });
@@ -374,6 +374,15 @@ test('the evidence summary says when content was not scanned or values were repl
   assert.doesNotMatch(await summaryOf({ available: true, redacted: 0, rules: [] }), /密钥/);
   const footer = await footerOf({ promptRedacted: 1 });
   assert.ok(footer.children.some(child => child.textContent === '本轮提问与历史中 1 个疑似密钥已替换后发送'));
+});
+
+test('the diff panel renders from files alone, without a duplicated diff text', async () => {
+  const patch = 'diff --git a/a.js b/a.js\n--- a/a.js\n+++ b/a.js\n@@ -1 +1 @@\n-old\n+new\n';
+  const { context, nodes } = loadClient(url => url.includes('/diff')
+    ? Promise.resolve({ json: async () => ({ success: true, files: [{ path: 'a.js', patch, additions: 1, deletions: 1 }], statText: '1 个文件，+1 / -1' }) })
+    : keeperResponse());
+  await context.fetchDiff('B', 'HEAD');
+  assert.match(nodes.get('diff-content').innerHTML, /diff-line-add[^]*\+new/);
 });
 
 test('code references resolve only to diff files, including paths run into Chinese prose', () => {

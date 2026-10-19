@@ -877,7 +877,7 @@ async function fetchDiff(repoId, target) {
     const statBadge = document.getElementById('diff-stat-badge');
     statBadge.textContent = data.statText ? data.statText.split('\n').pop().trim() : '0 文件';
 
-    if (!data.diffText || data.diffText.trim() === '') {
+    if (!currentDiffFiles.length) {
       if (data.isCleanWorkingTree && data.fallbackHead) {
         diffEl.innerHTML = `
           <div class="p-8 text-center text-[var(--text-muted)] space-y-3 bg-[var(--bg-card)] rounded-xl border border-[var(--border-app)] m-4 shadow-sm">

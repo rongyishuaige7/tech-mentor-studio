@@ -22,6 +22,15 @@ test('HTTP selection supports unborn diff, registered IDs and JSON errors', asyn
   assert.match((await malformed.json()).error, /JSON/);
 });
 
+test('the diff response carries each patch once, in files', async t => {
+  const { root, write, commit } = gitFixture(t); write('code.js', 'old\n'); commit('first'); write('code.js', 'new\n');
+  const { request } = await appFixture(t, root);
+  const { repos } = await (await request('/api/repos')).json();
+  const diff = await (await request(`/api/repos/${repos[0].id}/diff?target=working-tree`)).json();
+  assert.equal(Object.hasOwn(diff, 'diffText'), false);
+  assert.match(diff.files[0].patch, /\+new/);
+});
+
 test('HTTP pick directory supports selection, cancel, non-git and unsupported platforms', async t => {
   const { root, write } = gitFixture(t); write('README.md', '# test\n');
   let mockResult = { canceled: false, path: root };

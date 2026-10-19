@@ -214,7 +214,8 @@ app.get('/api/repos/:repoId/diff', async (req, res) => {
   try {
     const repoPath = registry.resolve(req.params.repoId);
     const options = { signal: lifecycle.signal };
-    const data = await loadDiff(repoPath, req.query.target || 'working-tree', options);
+    // diffText repeats files[].patch; the page only needs the files.
+    const { diffText, ...data } = await loadDiff(repoPath, req.query.target || 'working-tree', options);
     res.json(redactKnownSecret({ ...data, repoPath, hasFacts: await hasProjectFacts(repoPath, data, options) }, config.proxyKey));
   } catch (error) { sendFailure(res, error, lifecycle); }
   finally { lifecycle.dispose(); }

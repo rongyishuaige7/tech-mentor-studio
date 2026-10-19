@@ -8,7 +8,7 @@ export async function fixture(page, options = {}) {
     commits: [{ hash: 'a'.repeat(40), shortHash: 'aaaaaaa', msg: 'fixture', author: 'audit', relTime: 'now' }], presets: [], dirtyCount: 0
   } }));
   await page.route('**/api/repos/fixture/diff?*', route => route.fulfill({ json: { success: true,
-    files: [{ path: name, patch, additions: 1, deletions: 1 }], diffText: patch, hasFacts: false
+    files: [{ path: name, patch, additions: 1, deletions: 1 }], hasFacts: false
   } }));
   await page.route('**/api/models', route => route.fulfill({ json: { success: true, models: [{ id: 'test-model', name: 'Test Model' }] } }));
   await page.route('**/api/tokens/keeper-stats', route => route.fulfill({ json: { success: false } }));
