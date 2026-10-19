@@ -337,6 +337,23 @@ test('a fresh analysis takes the viewed file as scope, and clearing it can be un
   assert.equal(get('mentorSnapshotId'), 'snap-2');
 });
 
+test('the first answer lists its evidence; follow-ups on the same snapshot do not repeat it', async () => {
+  const evidence = { revision: 'working-tree', diff: { files: [{ path: 'src/a.js', truncated: false }], omitted: 2 },
+    documents: [{ path: 'README.md', truncated: true, ranges: [[1, 80]] }],
+    sources: [{ path: 'src/a.js', truncated: true, ranges: [[10, 40], [90, 95]] }],
+    warnings: ['"x"：证据不可读取或已排除'], warningCount: 1 };
+  const { context, nodes } = analyzeClient(call => answer('snap', `q${call}`, call === 1 ? { evidence } : {}));
+  await context.startMentorAnalysis('walkthrough', '', false);
+  await context.startMentorAnalysis('custom', 'why', false);
+  const footers = [...nodes.values()].filter(node => node.id.startsWith('footer-'));
+  const details = footer => footer.children.find(child => child.className === 'evidence-details');
+  const first = details(footers[0]);
+  assert.equal(first.children[0].textContent, '本次依据：Diff 1 个文件（另有 2 个未展示） · 文档 1 份 · 源码 1 个文件 · 2 处截断');
+  const items = first.children.filter(child => child.children.length && !child.className).flatMap(ul => ul.children.map(li => li.textContent));
+  assert.deepEqual(items, ['src/a.js', 'README.md（第 1-80 行，已截断）', 'src/a.js：第 10-40, 90-95 行', '"x"：证据不可读取或已排除']);
+  assert.equal(details(footers[1]), undefined);
+});
+
 test('code references resolve only to diff files, including paths run into Chinese prose', () => {
   const { context } = loadClient(keeperResponse);
   const paths = ['lib/mentor.js', 'public/app.js', 'test/app.js', '目录/中文.js'];

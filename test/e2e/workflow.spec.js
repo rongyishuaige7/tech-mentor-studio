@@ -2,8 +2,8 @@ import { test, expect } from '@playwright/test';
 import fs from 'node:fs';
 import { fixture } from './fixture.js';
 
-function stream(text) {
-  return [{ type: 'snapshot', snapshotId: 'browser-snapshot', resolvedTarget: 'a'.repeat(40) }, { type: 'chunk', text }, { type: 'finished' }]
+function stream(text, snapshot = {}) {
+  return [{ type: 'snapshot', snapshotId: 'browser-snapshot', resolvedTarget: 'a'.repeat(40), ...snapshot }, { type: 'chunk', text }, { type: 'finished' }]
     .map(event => `data: ${JSON.stringify(event)}\n\n`).join('');
 }
 
@@ -86,6 +86,20 @@ test('answer references open the cited diff line and selected lines become a quo
   });
   await page.locator('#btn-ask-selection').click();
   await expect(page.locator('#mentor-input')).toHaveValue(/^关于 src\/app\.js:11-12：\n```diff\n-old\n\+new\n tail\n```/);
+});
+
+test('the first answer lists the evidence the model received', async ({ page }) => {
+  await fixture(page);
+  const evidence = { revision: 'a'.repeat(40), diff: { files: [{ path: 'src/app.js', truncated: false }], omitted: 0 },
+    documents: [{ path: 'README.md', truncated: false, ranges: [[1, 12]] }],
+    sources: [{ path: 'src/app.js', truncated: true, ranges: [[1, 40], [90, 120]] }], warnings: [], warningCount: 0 };
+  await page.route('**/api/mentor/analyze', route => route.fulfill({ contentType: 'text/event-stream', body: stream('回答', { evidence }) }));
+  await page.goto('/');
+  await page.locator('#btn-walkthrough').click();
+  const details = page.locator('.evidence-details');
+  await expect(details.locator('summary')).toHaveText('本次依据：Diff 1 个文件 · 文档 1 份 · 源码 1 个文件 · 1 处截断');
+  await details.locator('summary').click();
+  await expect(details.locator('li')).toHaveText(['src/app.js', 'README.md', 'src/app.js：第 1-40, 90-120 行']);
 });
 
 test('large Diff pages retain correct line numbers and full copy', async ({ page, context }) => {

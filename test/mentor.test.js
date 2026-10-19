@@ -100,6 +100,22 @@ test('follow-ups keep the requested target across clean fallback and ranges', as
   assert.equal(resolvedOnly.status, 409);
 });
 
+test('the first snapshot lists what the model was given; follow-ups reuse it without a list', async t => {
+  const { root, write, commit } = gitFixture(t);
+  write('README.md', '# docs\n'); write('src/code.js', 'old\n'); commit('first');
+  write('src/code.js', 'manifest-has-no-contents\n');
+  const { request } = await appFixture(t, root, { fetchImpl: async () => completion() });
+  await request('/api/repos');
+  const analyze = body => request('/api/mentor/analyze', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ repoPath: root, target: 'working-tree', ...body }) });
+  const first = events(await (await analyze({})).text()).find(event => event.type === 'snapshot');
+  assert.deepEqual(first.evidence.diff, { files: [{ path: 'src/code.js', truncated: false }], omitted: 0 });
+  assert.deepEqual(first.evidence.documents, [{ path: 'README.md', truncated: false, ranges: [[1, 1]] }]);
+  assert.deepEqual(first.evidence.sources, [{ path: 'src/code.js', truncated: false, ranges: [[1, 1]] }]);
+  assert.equal(JSON.stringify(first.evidence).includes('manifest-has-no-contents'), false);
+  const follow = events(await (await analyze({ snapshotId: first.snapshotId, history: [{ role: 'assistant', content: 'answer' }], customPrompt: 'why' })).text());
+  assert.equal(follow.find(event => event.type === 'snapshot').evidence, undefined);
+});
+
 test('snapshot expiry slides with use and capacity evicts the least recently used', () => {
   let now = 0; const store = new SnapshotStore({ capacity: 2, ttl: 100, now: () => now });
   const a = store.add({ context: 'a' }); const b = store.add({ context: 'b' });

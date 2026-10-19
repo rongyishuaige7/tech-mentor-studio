@@ -353,6 +353,13 @@ body {
 #mentor-form { align-items: flex-end; }
 #mentor-input { resize: none; max-height: 160px; overflow-y: auto; line-height: 1.5; }
 
+/* 本次依据：模型实际收到的 Diff、文档与源码范围 */
+.evidence-details { margin-top: 6px; font-size: 11px; color: var(--text-secondary); }
+.evidence-details summary { cursor: pointer; color: var(--text-muted); }
+.evidence-details summary:hover { color: var(--text-primary); }
+.evidence-heading { margin-top: 6px; font-weight: 600; color: var(--text-secondary); }
+.evidence-details ul { margin: 2px 0 0 1.1rem; list-style: disc; overflow-wrap: anywhere; }
+
 /* Keeper 配额浮窗面板 */
 #keeper-detail-popover {
   background: var(--bg-surface);

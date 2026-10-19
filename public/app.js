@@ -1378,6 +1378,7 @@ async function startMentorAnalysis(mode, customPrompt = '', resetSession = false
   let turnInstruction = customPrompt;
   let renewing = false;
   let snapshotRenewed = false;
+  let turnEvidence = null;
 
   try {
     let response;
@@ -1429,6 +1430,7 @@ async function startMentorAnalysis(mode, customPrompt = '', resetSession = false
             mentorRequestedTarget = typeof event.requestedTarget === 'string' ? event.requestedTarget : activeTarget;
             snapshotRenewed = renewing || Boolean(event.renewed);
             if (typeof event.instruction === 'string' && event.instruction) turnInstruction = event.instruction;
+            if (event.evidence && typeof event.evidence === 'object') turnEvidence = event.evidence;
           } else if (event.type === 'status') {
             statusText.textContent = event.message;
           } else if (event.type === 'chunk' && !finalized) {
@@ -1452,6 +1454,7 @@ async function startMentorAnalysis(mode, customPrompt = '', resetSession = false
                 : `分析快照: ${evidenceTarget} · 追问保留首次证据`;
               footerEl.appendChild(evidenceNotice);
             }
+            if (turnEvidence) footerEl.appendChild(renderEvidence(turnEvidence));
             if (currentTurnUsage) {
               const numeric = key => Math.max(0, Number(currentTurnUsage[key]) || 0);
               const usage = document.createElement('div');
@@ -1507,6 +1510,43 @@ async function startMentorAnalysis(mode, customPrompt = '', resetSession = false
       renderMentorScope();
     }
   }
+}
+
+// "本次依据": which diff files, documents and source lines the model was given.
+// Built from text nodes only; the manifest carries paths and ranges, no contents.
+function renderEvidence(evidence) {
+  const list = value => Array.isArray(value) ? value.filter(item => item && typeof item.path === 'string') : [];
+  const diffFiles = list(evidence.diff?.files), documents = list(evidence.documents), sources = list(evidence.sources);
+  const omitted = Math.max(0, Number(evidence.diff?.omitted) || 0);
+  const cut = [...diffFiles, ...documents, ...sources].filter(item => item.truncated).length;
+  const spans = ranges => Array.isArray(ranges) && ranges.length
+    ? ranges.map(([start, end]) => start === end ? `${start}` : `${start}-${end}`).join(', ') : '';
+  const details = document.createElement('details');
+  details.className = 'evidence-details';
+  const summary = document.createElement('summary');
+  summary.textContent = `本次依据：Diff ${diffFiles.length} 个文件${omitted ? `（另有 ${omitted} 个未展示）` : ''} · 文档 ${documents.length} 份 · 源码 ${sources.length} 个文件${cut ? ` · ${cut} 处截断` : ''}`;
+  details.appendChild(summary);
+  const section = (title, items, describe) => {
+    if (!items.length) return;
+    const heading = document.createElement('div');
+    heading.className = 'evidence-heading';
+    heading.textContent = title;
+    const ul = document.createElement('ul');
+    for (const item of items) {
+      const li = document.createElement('li');
+      li.textContent = describe(item);
+      ul.appendChild(li);
+    }
+    details.appendChild(heading);
+    details.appendChild(ul);
+  };
+  section('Diff', diffFiles, item => `${item.path}${item.truncated ? '（已截断）' : ''}`);
+  section('文档', documents, item => `${item.path}${item.truncated ? `（第 ${spans(item.ranges)} 行，已截断）` : ''}`);
+  section('源码', sources, item => `${item.path}${item.truncated ? `：第 ${spans(item.ranges)} 行` : '：全文'}`);
+  const warnings = Array.isArray(evidence.warnings) ? evidence.warnings.filter(text => typeof text === 'string') : [];
+  const more = Math.max(0, (Number(evidence.warningCount) || warnings.length) - warnings.length);
+  section('提示', warnings.map(text => ({ path: text })).concat(more ? [{ path: `另有 ${more} 条提示` }] : []), item => item.path);
+  return details;
 }
 
 // 快速追问胶囊生成：第一项随本轮模式变化，只有出过题时才“展开考题”
