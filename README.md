@@ -88,7 +88,7 @@ PORT=3301 NO_BROWSER=1 SCAN_ROOTS_JSON="$(node -p 'JSON.stringify([process.cwd()
 npm run test:browser
 ```
 
-已有服务也可用于验证：`MENTOR_TEST_URL=http://127.0.0.1:3300 npm run test:browser`。模型回答使用测试替身；测试不会调用真实模型或修改 Keeper。Node 测试使用独立临时 Git 仓库和 SQLite 文件。
+已有服务也可用于验证：`MENTOR_TEST_URL=http://127.0.0.1:3300 npm run test:browser`。模型回答使用测试替身；测试不会调用真实模型或修改 Keeper。Node 测试使用独立临时 Git 仓库和 SQLite 文件。推送到 `main` 或提交 PR 时，GitHub Actions（`.github/workflows/ci.yml`）会在 Linux 上运行同样的检查、测试、构建、审计和浏览器回归。CI 上没有安装 gitleaks，真实扫描的用例会跳过。
 
 ## 实现与限制
 

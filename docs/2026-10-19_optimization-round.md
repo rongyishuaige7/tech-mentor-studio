@@ -162,3 +162,10 @@
     - 首屏加载的前端脚本：4044 KB 降到 661 KB；`DOMContentLoaded` 从 73 ms 降到 42 ms（三次加载取中位数）。
   - 新增的按需加载测试在旧版本上失败（旧版本首屏就请求了 `mermaid.js`），在新版本上通过；另增一项 Node 测试，覆盖构建哈希的判断。
   - `npm run check` 通过；`npm test` 97 项全部通过；`npm run test:browser` 11 项全部通过。
+- 第 12 片 GitHub Actions CI：
+  - `.github/workflows/ci.yml` 包含两个任务，运行在 ubuntu-latest、Node 22 上，仓库权限只读。`actions/checkout` 和 `actions/setup-node` 固定到具体提交（v7.0.1 `3d3c42e`、v7.1.0 `949feb2`）。
+  - 一个任务先安装 sqlite3 和 lsof，再依次运行 check、test、build、audit；另一个任务安装 Chromium，在 3301 启动服务，然后运行浏览器回归。
+  - 首次运行（run 39272636050，提交 `2ee3e57`）两个任务都通过：
+    - `npm test` 共 97 项：96 项通过，1 项跳过，0 项失败。CI 上没有安装 gitleaks，所以跳过了真实扫描用例。
+    - 浏览器回归 11 项全部通过。
+    - `npm audit` 报告 0 个漏洞。
