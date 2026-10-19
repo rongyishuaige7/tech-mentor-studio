@@ -10,7 +10,7 @@ let diffPage = 0;
 let reposLoadSequence = 0;
 let modelsLoadSequence = 0;
 let currentDiffWarnings = [];
-let currentFocusFile = null; // null 表示全部文件
+let currentFocusFile = null; // Diff 面板正在查看的文件，null 表示全部文件
 let currentAbortController = null;
 let mentorSessionVersion = 0;
 let mentorRequestSequence = 0;
@@ -24,7 +24,18 @@ let conversationHistory = [];
 let mentorSnapshotId = null;
 let mentorResolvedTarget = null;
 let mentorRequestedTarget = null;
-const repoSessions = new Map();
+// What the conversation is about ({ file: null } = all files). It is fixed when
+// the conversation starts; viewing other files in the diff does not change it.
+let mentorScope = null;
+// Conversations are kept per repository and target, so browsing to another
+// commit and back finds the discussion where it was left.
+const mentorSessions = new Map();
+const MAX_SAVED_SESSIONS = 30;
+const lastRepoView = new Map(); // repo id -> { target, viewFile }
+const sessionKey = (repoId, target) => `${repoId}\n${target}`;
+let pendingUndo = null;
+let undoTimer = null;
+const DIFF_PAGE_SIZE = 2000;
 
 // Instructions for these actions live on the server (lib/mentor.js MODES); the
 // labels only name the user's turn in the conversation.
@@ -53,45 +64,112 @@ function historyForRequest(history) {
   return kept;
 }
 
-function saveCurrentRepoSession() {
-  if (!activeRepo) return;
+function captureSession() {
   const chatStream = document.getElementById('mentor-chat-stream');
-  if (conversationHistory.length > 0) {
-    repoSessions.set(activeRepo.id, {
-      conversationHistory: [...conversationHistory],
-      mentorSnapshotId,
-      mentorResolvedTarget,
-      mentorRequestedTarget,
-      target: activeTarget,
-      focusFile: currentFocusFile,
-      chatHtml: chatStream ? chatStream.innerHTML : null
-    });
+  let chatHtml = chatStream ? chatStream.innerHTML : null;
+  if (chatStream?.cloneNode) {
+    // A turn still streaming is not part of the saved conversation.
+    const copy = chatStream.cloneNode(true);
+    copy.querySelectorAll('.pending-turn').forEach(node => node.remove());
+    chatHtml = copy.innerHTML;
   }
+  return {
+    conversationHistory: [...conversationHistory],
+    mentorSnapshotId,
+    mentorResolvedTarget,
+    mentorRequestedTarget,
+    scopeFile: mentorScope ? mentorScope.file : null,
+    chatHtml
+  };
 }
 
-function restoreRepoSession(saved) {
+function saveCurrentSession() {
+  if (!activeRepo) return;
+  lastRepoView.set(activeRepo.id, { target: activeTarget, viewFile: currentFocusFile });
+  if (!conversationHistory.length) return;
+  const key = sessionKey(activeRepo.id, activeTarget);
+  mentorSessions.delete(key);
+  mentorSessions.set(key, captureSession());
+  while (mentorSessions.size > MAX_SAVED_SESSIONS) mentorSessions.delete(mentorSessions.keys().next().value);
+}
+
+function restoreSession(saved) {
   if (!saved?.conversationHistory?.length) return false;
   currentAbortController?.abort();
   currentAbortController = null;
   document.getElementById('mentor-status-bar')?.classList.add('hidden');
   mentorSessionVersion++;
+  hideMentorNotice();
   conversationHistory = [...saved.conversationHistory];
   mentorSnapshotId = saved.mentorSnapshotId;
   mentorResolvedTarget = saved.mentorResolvedTarget;
-  mentorRequestedTarget = saved.mentorRequestedTarget || saved.target || null;
+  mentorRequestedTarget = saved.mentorRequestedTarget || null;
+  mentorScope = { file: saved.scopeFile ?? null };
   const chatStream = document.getElementById('mentor-chat-stream');
   if (chatStream && saved.chatHtml) {
     chatStream.innerHTML = saved.chatHtml;
     lucide.createIcons();
   }
+  renderMentorScope();
   return true;
 }
 
-function clearCurrentMentorSession() {
-  if (activeRepo) {
-    repoSessions.delete(activeRepo.id);
-  }
+// Ends the conversation for the current target. A user-initiated clear can be
+// undone for a few seconds, so one mis-click never costs a study session.
+function clearCurrentMentorSession({ undoable = true, notice = '已清空对话' } = {}) {
+  const saved = undoable && conversationHistory.length ? captureSession() : null;
+  const key = activeRepo ? sessionKey(activeRepo.id, activeTarget) : null;
+  if (key) mentorSessions.delete(key);
   clearMentorSession();
+  if (saved && key) showMentorNotice(notice, { key, saved });
+  else if (!undoable && notice) showMentorNotice(notice);
+}
+
+function showMentorNotice(message, undo = null) {
+  pendingUndo = undo;
+  const text = document.getElementById('mentor-undo-text');
+  if (text) text.textContent = message;
+  const undoButton = document.getElementById('btn-undo-clear');
+  if (undo) undoButton?.classList.remove('hidden');
+  else undoButton?.classList.add('hidden');
+  document.getElementById('mentor-undo-bar')?.classList.remove('hidden');
+  clearTimeout(undoTimer);
+  undoTimer = setTimeout(hideMentorNotice, 10000);
+  undoTimer?.unref?.();
+}
+
+function hideMentorNotice() {
+  pendingUndo = null;
+  clearTimeout(undoTimer);
+  document.getElementById('mentor-undo-bar')?.classList.add('hidden');
+}
+
+function undoClearMentorSession() {
+  const pending = pendingUndo;
+  hideMentorNotice();
+  if (!pending || !activeRepo || pending.key !== sessionKey(activeRepo.id, activeTarget) || conversationHistory.length) return;
+  restoreSession(pending.saved);
+  saveCurrentSession();
+}
+
+// Keeps "what I am looking at" and "what the mentor is discussing" visibly
+// separate; changing the discussion is always an explicit action.
+function renderMentorScope() {
+  const text = document.getElementById('mentor-scope-text');
+  const button = document.getElementById('btn-scope-new');
+  if (!text || !button) return;
+  const name = file => file ? file.split('/').pop() : '全部文件';
+  const active = mentorScope && (conversationHistory.length > 0 || currentAbortController);
+  const shown = active ? mentorScope.file : currentFocusFile;
+  text.textContent = `${active ? '讨论范围' : '新对话将针对'}：${name(shown)}`;
+  text.title = shown || '本次改动的全部文件';
+  if (active && currentFocusFile !== mentorScope.file) {
+    button.textContent = `针对${currentFocusFile ? ` ${name(currentFocusFile)} ` : '全部文件'}新开对话`;
+    button.title = '结束当前对话（可撤销），下一次提问针对正在查看的内容';
+    button.classList.remove('hidden');
+  } else {
+    button.classList.add('hidden');
+  }
 }
 
 // Starts a new analysis when there is no usable snapshot for the current
@@ -354,6 +432,14 @@ function setupEventListeners() {
       return;
     }
 
+    // Only trusted code creates these: sanitized answers cannot carry buttons or
+    // data attributes, and the target file must be in the current diff.
+    const codeRef = event.target.closest('.mentor-prose .code-ref');
+    if (codeRef) {
+      revealDiffLine(codeRef.dataset.refFile, Number(codeRef.dataset.refLine), Number(codeRef.dataset.refEnd) || null);
+      return;
+    }
+
     const button = event.target.closest('[data-action]');
     if (!button) return;
     const value = button.dataset.value;
@@ -404,13 +490,31 @@ function setupEventListeners() {
     if (prompt) {
       startMentorAnalysis('custom', prompt, false); // 多轮追问
       input.value = '';
+      resizePromptInput();
     }
   });
+  // Enter 发送，Shift+Enter 换行；输入法选词时的 Enter 不发送
+  const promptInput = document.getElementById('mentor-input');
+  promptInput.addEventListener('keydown', event => {
+    if (event.key !== 'Enter' || event.shiftKey || event.isComposing || event.keyCode === 229) return;
+    event.preventDefault();
+    document.getElementById('mentor-form').requestSubmit();
+  });
+  promptInput.addEventListener('input', resizePromptInput);
 
   document.getElementById('btn-stop-analyze').addEventListener('click', stopMentorAnalysis);
 
-  // 清空多轮对话
-  document.getElementById('btn-clear-mentor').addEventListener('click', clearCurrentMentorSession);
+  // 清空多轮对话（可撤销）；新开对话结束当前讨论，改为针对正在查看的内容
+  document.getElementById('btn-clear-mentor').addEventListener('click', () => clearCurrentMentorSession());
+  document.getElementById('btn-scope-new').addEventListener('click', () => clearCurrentMentorSession({ notice: '已结束上一段对话' }));
+  document.getElementById('btn-undo-clear').addEventListener('click', undoClearMentorSession);
+
+  // 在 Diff 中选中代码后浮出“就选中代码提问”
+  const askSelection = document.getElementById('btn-ask-selection');
+  askSelection.addEventListener('mousedown', event => event.preventDefault());
+  askSelection.addEventListener('click', askAboutSelection);
+  document.addEventListener('selectionchange', updateAskSelection);
+  document.addEventListener('scroll', updateAskSelection, true);
 
   // 复制笔记
   document.getElementById('btn-copy-mentor').addEventListener('click', copyMentorNotes);
@@ -588,7 +692,7 @@ function isKnownTarget(target, data) {
 
 // 2. 选择仓库并加载提交记录
 async function selectRepo(repo) {
-  saveCurrentRepoSession();
+  saveCurrentSession();
   showPanel('diff');
   currentCommits = [];
   currentPresets = [];
@@ -627,19 +731,17 @@ async function selectRepo(repo) {
       : data.dirtyCount === 0
         ? (data.commits.find(commit => !commit.isWorkingTree)?.hash || data.commits[0].hash)
         : data.commits[0].hash;
-    const saved = repoSessions.get(repo.id);
+    const view = lastRepoView.get(repo.id);
     let target = defaultTarget;
-    let focusFile = null;
-    if (saved?.target && isKnownTarget(saved.target, data)) {
-      target = saved.target;
-      focusFile = saved.focusFile || null;
-      if (!restoreRepoSession(saved)) repoSessions.delete(repo.id);
-    } else if (saved) {
-      repoSessions.delete(repo.id);
+    let viewFile = null;
+    if (view?.target && isKnownTarget(view.target, data)) {
+      target = view.target;
+      viewFile = view.viewFile || null;
     }
 
     activeTarget = target;
-    currentFocusFile = focusFile;
+    currentFocusFile = viewFile;
+    restoreSession(mentorSessions.get(sessionKey(repo.id, target)));
     renderCommitPresets(currentPresets);
     renderCommitList(currentCommits);
     fetchDiff(repo.id, target);
@@ -687,10 +789,17 @@ function renderCommitList(commits) {
   lucide.createIcons();
 }
 
+// Switching target parks the current conversation and brings back the one
+// held for the new target, if any.
 window.selectTarget = (targetHash) => {
-  if (targetHash !== activeTarget || currentFocusFile !== null) clearCurrentMentorSession();
-  activeTarget = targetHash;
+  if (targetHash !== activeTarget) {
+    saveCurrentSession();
+    activeTarget = targetHash;
+    clearMentorSession();
+    if (activeRepo) restoreSession(mentorSessions.get(sessionKey(activeRepo.id, targetHash)));
+  }
   currentFocusFile = null;
+  renderMentorScope();
   renderCommitPresets(currentPresets);
   renderCommitList(currentCommits);
   if (activeRepo) {
@@ -736,13 +845,15 @@ async function fetchDiff(repoId, target) {
 
     currentDiffFiles = data.files || [];
     currentDiffWarnings = data.warnings || [];
-    if (currentFocusFile && !currentDiffFiles.some(file => file.path === currentFocusFile)) {
-      // The restored selection no longer contains this file; do not let a stale
-      // focus silently reuse a mentor snapshot captured for it.
-      currentFocusFile = null;
-      clearCurrentMentorSession();
+    const inDiff = path => currentDiffFiles.some(file => file.path === path);
+    if (currentFocusFile && !inDiff(currentFocusFile)) currentFocusFile = null;
+    if (mentorScope?.file && !inDiff(mentorScope.file)) {
+      // The conversation was about a file this selection no longer contains; do
+      // not let follow-ups reuse a snapshot captured for it.
+      clearCurrentMentorSession({ undoable: false, notice: `${mentorScope.file.split('/').pop()} 已不在当前改动中，相关对话已结束` });
     }
     renderFileFilterChips(currentDiffFiles);
+    renderMentorScope();
 
     const statBadge = document.getElementById('diff-stat-badge');
     statBadge.textContent = data.statText ? data.statText.split('\n').pop().trim() : '0 文件';
@@ -833,13 +944,12 @@ function renderFileFilterChips(files) {
   container.innerHTML = html;
 }
 
+// Only changes what the diff panel shows; the mentor conversation keeps its scope.
 window.setFocusFile = (filePath) => {
-  if (currentFocusFile !== filePath) {
-    clearCurrentMentorSession();
-    currentFocusFile = filePath;
-  }
+  currentFocusFile = filePath;
   renderFileFilterChips(currentDiffFiles);
   renderActiveDiff();
+  renderMentorScope();
 };
 
 function showPanel(panel) {
@@ -853,9 +963,9 @@ function renderActiveDiff(resetPage = true) {
   if (resetPage) diffPage = 0;
   const diffEl = document.getElementById('diff-content');
   if (!currentDiffFiles.length) { diffEl.innerHTML = '<span class="text-slate-500">// 无差异内容</span>'; return; }
-  const text = currentFocusFile ? currentDiffFiles.find(file => file.path === currentFocusFile)?.patch || '' : currentDiffFiles.map(file => file.patch).join('\n\n');
+  const text = diffViewSegments().map(segment => segment.file.patch).join('\n\n');
   const total = text.split('\n').length;
-  const perPage = 2000, pages = Math.ceil(total / perPage);
+  const perPage = DIFF_PAGE_SIZE, pages = Math.ceil(total / perPage);
   diffPage = Math.max(0, Math.min(pages - 1, diffPage));
   const warnings = currentDiffWarnings.length ? `<div class="p-2 text-amber-300 text-xs">${currentDiffWarnings.map(escapeHtml).join('<br>')}</div>` : '';
   const navigation = pages > 1 ? `<div class="diff-pagination">
@@ -868,26 +978,253 @@ function renderActiveDiff(resetPage = true) {
 
 function renderFormattedDiff(rawDiff, start = 0, count = Infinity) {
   if (!rawDiff?.trim()) return '<span class="text-slate-500">// 无差异内容</span>';
+  const output = [];
+  for (const row of walkDiff(rawDiff.split('\n'))) {
+    if (row.index >= start + count) break;
+    if (row.index < start) continue;
+    output.push(`<div class="diff-line ${DIFF_ROW_CLASS[row.kind]}" data-row="${row.index}"><span class="diff-num">${row.label}</span><span class="diff-text">${escapeHtml(row.line)}</span></div>`);
+  }
+  return output.join('');
+}
+
+const DIFF_ROW_CLASS = {
+  hunk: 'diff-line-hunk', file: 'text-indigo-400 font-bold mt-3 mb-1',
+  add: 'diff-line-add', del: 'diff-line-del', context: '', meta: 'text-slate-500'
+};
+
+// Walks patch lines once, tracking hunk line numbers. The renderer and code
+// reference navigation share it, so "line N" means the same row in both.
+function* walkDiff(lines) {
   let oldLine = 0, newLine = 0, oldRemaining = 0, newRemaining = 0;
-  const lines = rawDiff.split('\n'), output = [];
-  for (let i = 0; i < Math.min(lines.length, start + count); i++) {
-    const line = lines[i];
-    let rowClass = 'text-slate-500', number = '···';
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index];
     const hunk = line.match(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/);
     if (hunk) {
       oldLine = Number(hunk[1]); newLine = Number(hunk[3]);
       oldRemaining = Number(hunk[2] ?? 1); newRemaining = Number(hunk[4] ?? 1);
-      rowClass = 'diff-line-hunk'; number = '@@';
+      yield { index, line, kind: 'hunk', label: '@@' };
     } else if (line.startsWith('diff --git ')) {
-      oldRemaining = newRemaining = 0; rowClass = 'text-indigo-400 font-bold mt-3 mb-1';
-    } else if (oldRemaining || newRemaining) {
-      if (line.startsWith('+')) { newRemaining--; rowClass = 'diff-line-add'; number = newLine++; }
-      else if (line.startsWith('-')) { oldRemaining--; rowClass = 'diff-line-del'; number = oldLine++; }
-      else if (line.startsWith(' ')) { oldRemaining--; newRemaining--; oldLine++; rowClass = ''; number = newLine++; }
+      oldRemaining = newRemaining = 0;
+      yield { index, line, kind: 'file', label: '···' };
+    } else if ((oldRemaining || newRemaining) && line.startsWith('+')) {
+      newRemaining--;
+      yield { index, line, kind: 'add', newNo: newLine, label: newLine++ };
+    } else if ((oldRemaining || newRemaining) && line.startsWith('-')) {
+      oldRemaining--;
+      yield { index, line, kind: 'del', oldNo: oldLine, label: oldLine++ };
+    } else if ((oldRemaining || newRemaining) && line.startsWith(' ')) {
+      oldRemaining--; newRemaining--;
+      yield { index, line, kind: 'context', oldNo: oldLine++, newNo: newLine, label: newLine++ };
+    } else {
+      yield { index, line, kind: 'meta', label: '···' };
     }
-    if (i >= start) output.push(`<div class="diff-line ${rowClass}"><span class="diff-num">${number}</span><span class="diff-text">${escapeHtml(line)}</span></div>`);
   }
-  return output.join('');
+}
+
+// The files shown in the diff panel and the row each starts at; the panel
+// joins their patches with a blank line.
+function diffViewSegments() {
+  const files = currentFocusFile ? currentDiffFiles.filter(file => file.path === currentFocusFile) : currentDiffFiles;
+  let start = 0;
+  return files.map(file => {
+    const segment = { file, start };
+    start += file.patch.split('\n').length + 1;
+    return segment;
+  });
+}
+
+// Finds the row for a cited line: the new-file line first (what the model sees
+// on context and added lines), then a deleted old-file line, else the nearest
+// changed row so the reader still lands in the right place.
+function locateDiffLine(patch, line) {
+  let deleted = null, nearest = null;
+  for (const row of walkDiff(patch.split('\n'))) {
+    if (row.newNo === line) return { row: row.index, exact: true };
+    if (row.oldNo === line && row.kind === 'del' && deleted === null) deleted = row.index;
+    const number = row.newNo ?? row.oldNo;
+    if (number !== undefined && (!nearest || Math.abs(number - line) < nearest.distance)) nearest = { row: row.index, distance: Math.abs(number - line) };
+  }
+  if (deleted !== null) return { row: deleted, exact: true };
+  return nearest && { row: nearest.row, exact: false };
+}
+
+// `path:line`, `path:start-end` or `path#Lline` in an answer. Candidates are
+// resolved against the diff files, so prose such as "端口:3300" stays text.
+const CODE_REF = /([\w.\-@+\/\u4e00-\u9fff]+)(?::|#L)(\d+)(?:\s*[-–~]\s*L?(\d+))?/g;
+
+function resolveRefPath(token, paths) {
+  // Chinese prose often runs straight into a path ("见lib/a.js:3"), so also try
+  // each start just after a CJK character, longest first.
+  for (let skip = 0; skip < token.length; skip++) {
+    if (skip && !/[\u4e00-\u9fff]/.test(token[skip - 1])) continue;
+    const name = token.slice(skip).replace(/^\.?\//, '');
+    if (!name) continue;
+    if (paths.includes(name)) return { file: name, skip };
+    const stripped = name.replace(/^[ab]\//, '');
+    const matches = paths.filter(path => path === stripped || path.endsWith(`/${stripped}`));
+    if (matches.length === 1) return { file: matches[0], skip };
+  }
+  return null;
+}
+
+function findCodeRefs(text, paths) {
+  const refs = [];
+  for (const match of text.matchAll(CODE_REF)) {
+    const resolved = resolveRefPath(match[1], paths);
+    if (!resolved) continue;
+    const line = Number(match[2]), end = Number(match[3]) || null;
+    if (!line) continue;
+    refs.push({ start: match.index + resolved.skip, stop: match.index + match[0].length, file: resolved.file, line, end: end > line ? end : null });
+  }
+  return refs;
+}
+
+function linkCodeReferences(root) {
+  const paths = currentDiffFiles.map(file => file.path);
+  if (!paths.length) return;
+  const visit = node => {
+    for (const child of [...(node.childNodes || [])]) {
+      if (child.nodeType === 3) linkTextNode(child, paths);
+      else if (child.nodeType === 1 && !child.matches('pre, a, button, svg, .mermaid, .code-block-header')) visit(child);
+    }
+  };
+  visit(root);
+}
+
+function linkTextNode(textNode, paths) {
+  const text = textNode.nodeValue;
+  const refs = findCodeRefs(text, paths);
+  if (!refs.length) return;
+  const fragment = document.createDocumentFragment();
+  let last = 0;
+  for (const ref of refs) {
+    fragment.append(text.slice(last, ref.start));
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'code-ref';
+    button.dataset.refFile = ref.file;
+    button.dataset.refLine = String(ref.line);
+    if (ref.end) button.dataset.refEnd = String(ref.end);
+    button.title = `在代码差异中查看 ${ref.file} 第 ${ref.line}${ref.end ? `-${ref.end}` : ''} 行`;
+    button.textContent = text.slice(ref.start, ref.stop);
+    fragment.append(button);
+    last = ref.stop;
+  }
+  fragment.append(text.slice(last));
+  textNode.replaceWith(fragment);
+}
+
+function revealDiffLine(file, line, end = null) {
+  showPanel('diff');
+  const target = currentDiffFiles.find(item => item.path === file);
+  const diffEl = document.getElementById('diff-content');
+  const notice = message => {
+    const note = document.createElement('div');
+    note.className = 'diff-ref-notice';
+    note.textContent = message;
+    diffEl.prepend(note);
+  };
+  if (!target) { notice(`${file} 不在当前代码差异中`); return; }
+  currentFocusFile = file;
+  renderFileFilterChips(currentDiffFiles);
+  renderMentorScope();
+  const found = locateDiffLine(target.patch, line);
+  if (!found) { renderActiveDiff(); return; }
+  diffPage = Math.floor(found.row / DIFF_PAGE_SIZE);
+  renderActiveDiff(false);
+  const last = end ? locateDiffLine(target.patch, end) : null;
+  const stop = last?.exact && last.row > found.row ? last.row : found.row;
+  let first = null;
+  for (let row = found.row; row <= stop; row++) {
+    const element = diffEl.querySelector(`[data-row="${row}"]`);
+    if (element) { element.classList.add('diff-line-ref'); first ||= element; }
+  }
+  if (!found.exact) notice(`第 ${line} 行不在本次改动的 Diff 中，已定位到最近的改动行`);
+  first?.scrollIntoView({ block: 'center' });
+}
+
+// Builds a question that quotes the selected diff rows with their file and
+// real line numbers, so the reader can ask about exactly what they see.
+const QUOTE_MAX_LINES = 120, QUOTE_MAX_CHARS = 6000;
+
+function selectionPrompt(fromRow, toRow) {
+  const blocks = [];
+  let used = 0, truncated = false;
+  for (const { file, start } of diffViewSegments()) {
+    const lines = file.patch.split('\n');
+    const from = Math.max(fromRow - start, 0), to = Math.min(toRow - start, lines.length - 1);
+    if (from > to) continue;
+    const picked = [];
+    for (const row of walkDiff(lines)) {
+      if (row.index < from) continue;
+      if (row.index > to) break;
+      if (row.kind === 'file' || row.kind === 'meta') continue;
+      if (picked.length >= QUOTE_MAX_LINES || used + row.line.length > QUOTE_MAX_CHARS) { truncated = true; break; }
+      picked.push(row); used += row.line.length + 1;
+    }
+    if (!picked.length) { if (truncated) break; continue; }
+    const newNos = picked.map(row => row.newNo).filter(Number.isInteger);
+    const oldNos = picked.map(row => row.oldNo).filter(Number.isInteger);
+    const span = numbers => numbers.length ? `${Math.min(...numbers)}${Math.max(...numbers) > Math.min(...numbers) ? `-${Math.max(...numbers)}` : ''}` : '';
+    const where = newNos.length ? `${file.path}:${span(newNos)}` : oldNos.length ? `${file.path}（旧版本第 ${span(oldNos)} 行）` : file.path;
+    const code = picked.map(row => row.line).join('\n');
+    const fence = '`'.repeat(Math.max(3, ...(code.match(/`+/g) || []).map(run => run.length + 1)));
+    blocks.push(`关于 ${where}：\n${fence}diff\n${code}\n${fence}`);
+    if (truncated) break;
+  }
+  if (!blocks.length) return null;
+  return `${blocks.join('\n\n')}${truncated ? '\n（选区较长，已截取前面部分）' : ''}\n\n`;
+}
+
+function selectedDiffRows() {
+  const selection = window.getSelection?.();
+  if (!selection || selection.isCollapsed || !selection.rangeCount) return null;
+  const diffEl = document.getElementById('diff-content');
+  const range = selection.getRangeAt(0);
+  const rowOf = node => (node?.nodeType === 1 ? node : node?.parentElement)?.closest('.diff-line');
+  const first = rowOf(range.startContainer), last = rowOf(range.endContainer);
+  if (!first || !last || !diffEl.contains(first) || !diffEl.contains(last)) return null;
+  const from = Number(first.dataset.row);
+  let to = Number(last.dataset.row);
+  // A triple-click ends at offset 0 of the next row, which holds nothing selected.
+  if (range.endOffset === 0 && to > from) to--;
+  return { from, to, rect: range.getBoundingClientRect() };
+}
+
+let selectionFrame = 0;
+function updateAskSelection() {
+  cancelAnimationFrame(selectionFrame);
+  selectionFrame = requestAnimationFrame(() => {
+    const button = document.getElementById('btn-ask-selection');
+    const selected = selectedDiffRows();
+    if (!button) return;
+    if (!selected) { button.classList.add('hidden'); return; }
+    button.style.top = `${Math.min(innerHeight - 44, selected.rect.bottom + 6)}px`;
+    button.style.left = `${Math.max(8, Math.min(innerWidth - 170, selected.rect.left))}px`;
+    button.classList.remove('hidden');
+  });
+}
+
+function askAboutSelection() {
+  const selected = selectedDiffRows();
+  document.getElementById('btn-ask-selection')?.classList.add('hidden');
+  if (!selected) return;
+  const quote = selectionPrompt(selected.from, selected.to);
+  if (!quote) return;
+  window.getSelection().removeAllRanges();
+  const input = document.getElementById('mentor-input');
+  input.value = quote + input.value;
+  showPanel('mentor');
+  input.focus();
+  input.setSelectionRange(input.value.length, input.value.length);
+  resizePromptInput();
+}
+
+function resizePromptInput() {
+  const input = document.getElementById('mentor-input');
+  if (!input?.style) return;
+  input.style.height = 'auto';
+  input.style.height = `${Math.min(input.scrollHeight, 160)}px`;
 }
 
 async function copyCurrentDiff() {
@@ -936,13 +1273,17 @@ async function startMentorAnalysis(mode, customPrompt = '', resetSession = false
   }
   if (resetSession) {
     clearMentorSession();
+    if (activeRepo) mentorSessions.delete(sessionKey(activeRepo.id, activeTarget));
+    mentorScope = { file: currentFocusFile };
   }
+  const scopeFile = mentorScope ? mentorScope.file : currentFocusFile;
 
   if (currentAbortController) {
     currentAbortController.abort();
   }
   const controller = new AbortController();
   currentAbortController = controller;
+  renderMentorScope();
   const requestId = ++mentorRequestSequence;
   const sessionVersion = mentorSessionVersion;
   const ownsRequest = () => requestId === mentorRequestSequence && sessionVersion === mentorSessionVersion;
@@ -961,13 +1302,13 @@ async function startMentorAnalysis(mode, customPrompt = '', resetSession = false
 
   // 每一轮都追加用户气泡：自由提问显示原文，精读动作显示动作名
   const userBubble = document.createElement('div');
-  userBubble.className = 'flex justify-end';
+  userBubble.className = 'flex justify-end pending-turn';
   userBubble.innerHTML = `
     <div class="bg-[var(--bg-bubble-user)] border border-[var(--border-user-bubble)] rounded-2xl rounded-tr-sm px-4 py-2.5 max-w-xl text-xs text-[var(--text-primary)] shadow-sm leading-relaxed">
       <div class="font-medium text-[var(--text-muted)] text-[11px] mb-1 flex items-center gap-1 justify-end">
         <span>你</span> <i data-lucide="user" class="w-3 h-3 text-[var(--text-muted)]"></i>
       </div>
-      <div>${escapeHtml(customPrompt || ACTION_LABELS[mode] || mode)}</div>
+      <div class="user-prompt">${escapeHtml(customPrompt || ACTION_LABELS[mode] || mode)}</div>
     </div>
   `;
   chatStream.appendChild(userBubble);
@@ -976,7 +1317,11 @@ async function startMentorAnalysis(mode, customPrompt = '', resetSession = false
 
   // 创建导师回答气泡容器
   const assistantBubble = document.createElement('div');
-  assistantBubble.className = 'flex justify-start';
+  assistantBubble.className = 'flex justify-start pending-turn';
+  const settleTurn = () => {
+    userBubble.classList.remove('pending-turn');
+    assistantBubble.classList.remove('pending-turn');
+  };
   const bubbleId = `bubble-${sessionVersion}-${requestId}`;
   assistantBubble.innerHTML = `
     <div class="bg-[var(--bg-bubble-assistant)] border border-[var(--border-assistant-bubble)] rounded-2xl rounded-tl-sm p-5 max-w-none w-full shadow-sm">
@@ -986,7 +1331,7 @@ async function startMentorAnalysis(mode, customPrompt = '', resetSession = false
             <path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3Z"/>
           </svg>
           Tech Mentor (${escapeHtml(modelSelect.options[modelSelect.selectedIndex]?.text?.split(' ')[0] || 'AI')})
-          ${currentFocusFile ? `<span class="text-[10px] px-2 py-0.5 rounded-full bg-[var(--accent-terracotta-bg)] text-[var(--accent-terracotta)] border border-[var(--accent-terracotta-border)]">聚焦: ${escapeHtml(currentFocusFile.split('/').pop())}</span>` : ''}
+          ${scopeFile ? `<span class="text-[10px] px-2 py-0.5 rounded-full bg-[var(--accent-terracotta-bg)] text-[var(--accent-terracotta)] border border-[var(--accent-terracotta-border)]">聚焦: ${escapeHtml(scopeFile.split('/').pop())}</span>` : ''}
         </span>
         <span class="text-[10px] text-[var(--text-subtle)] font-mono">${new Date().toLocaleTimeString()}</span>
       </div>
@@ -1023,7 +1368,7 @@ async function startMentorAnalysis(mode, customPrompt = '', resetSession = false
     target: activeTarget,
     mode,
     customPrompt,
-    focusFile: currentFocusFile,
+    focusFile: scopeFile,
     model: modelSelect.value,
     history: sentHistory,
     snapshotId: mentorSnapshotId
@@ -1119,7 +1464,8 @@ async function startMentorAnalysis(mode, customPrompt = '', resetSession = false
             if (footerEl) renderQuickChips(footerEl, mode);
             loadKeeperStats();
             statusBar.classList.add('hidden');
-            saveCurrentRepoSession();
+            settleTurn();
+            saveCurrentSession();
           }
         }
       }
@@ -1143,7 +1489,7 @@ async function startMentorAnalysis(mode, customPrompt = '', resetSession = false
         mentorSnapshotId = null;
         mentorRequestedTarget = null;
         mentorResolvedTarget = null;
-        if (activeRepo) repoSessions.delete(activeRepo.id);
+        if (activeRepo) mentorSessions.delete(sessionKey(activeRepo.id, activeTarget));
       }
       const notice = document.createElement('p');
       notice.className = 'text-rose-400 text-xs mt-2';
@@ -1154,9 +1500,11 @@ async function startMentorAnalysis(mode, customPrompt = '', resetSession = false
     }
   } finally {
     clearTimeout(renderTimer);
+    settleTurn();
     if (currentAbortController === controller) {
       currentAbortController = null;
       statusBar.classList.add('hidden');
+      renderMentorScope();
     }
   }
 }
@@ -1213,6 +1561,9 @@ function clearMentorSession() {
   mentorSnapshotId = null;
   mentorResolvedTarget = null;
   mentorRequestedTarget = null;
+  mentorScope = null;
+  hideMentorNotice();
+  renderMentorScope();
   const chatStream = document.getElementById('mentor-chat-stream');
   chatStream.innerHTML = `
     <div id="mentor-empty-state" class="h-full flex flex-col items-center justify-center text-center p-8 text-[var(--text-muted)]">
@@ -1223,7 +1574,7 @@ function clearMentorSession() {
       </div>
       <h3 class="text-sm font-semibold text-[var(--text-primary)]">专属技术导师就绪</h3>
       <p class="text-xs text-[var(--text-muted)] max-w-sm mt-1 leading-relaxed">
-        已挂载项目事实源与防噪音过滤。点击上方【快捷精读】或在下方提问。导师将结合系统全局约束深度带读，并支持连续多轮追问。
+        点击上方精读动作或在下方提问，可以连续追问。回答里的“文件:行号”可点击跳到对应代码；在代码差异中选中几行，可以直接就这段提问。
       </p>
     </div>
   `;
@@ -1354,6 +1705,9 @@ async function postProcessArticle(article) {
       console.warn('Mermaid render error:', e);
     }
   }
+
+  // 4. 把 `文件:行号` 变成可跳转到 Diff 对应行的链接
+  linkCodeReferences(article);
 
   lucide.createIcons();
 }

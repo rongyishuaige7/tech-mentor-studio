@@ -128,9 +128,11 @@ test('follow-up payload keeps the requested target instead of the resolved revis
   assert.equal(bodies[1].history.length, 1);
 });
 
-test('changing target or focus invalidates the mentor session', async () => {
-  const { context, get } = loadClient(url => {
+test('viewing another file keeps the conversation and its scope; switching target parks it', async () => {
+  const bodies = [];
+  const { context, get, nodes } = loadClient((url, options) => {
     if (url === '/api/mentor/analyze') {
+      bodies.push(JSON.parse(options.body));
       return Promise.resolve(eventResponse([
         { type: 'snapshot', snapshotId: 'snap', requestedTarget: 'HEAD', resolvedTarget: 'HEAD' },
         { type: 'chunk', text: 'answer' }, { type: 'finished' }
@@ -140,19 +142,24 @@ test('changing target or focus invalidates the mentor session', async () => {
     return keeperResponse();
   });
   await context.startMentorAnalysis('walkthrough', '', true);
+  context.setFocusFile('src/file.js');
   assert.equal(get('conversationHistory.length'), 1);
+  assert.equal(get('mentorSnapshotId'), 'snap');
+  assert.equal(nodes.get('mentor-scope-text').textContent, '讨论范围：全部文件');
+  assert.equal(nodes.get('btn-scope-new').textContent, '针对 file.js 新开对话');
+  await context.startMentorAnalysis('custom', 'why', false);
+  assert.equal(bodies[1].focusFile, null);
+  assert.equal(bodies[1].snapshotId, 'snap');
+
   context.selectTarget('other');
   assert.equal(get('conversationHistory.length'), 0);
   assert.equal(get('mentorSnapshotId'), null);
-
-  await context.startMentorAnalysis('walkthrough', '', true);
-  assert.equal(get('conversationHistory.length'), 1);
-  context.setFocusFile('src/file.js');
-  assert.equal(get('conversationHistory.length'), 0);
-  assert.equal(get('mentorSnapshotId'), null);
+  context.selectTarget('HEAD');
+  assert.equal(get('conversationHistory.length'), 3);
+  assert.equal(get('mentorSnapshotId'), 'snap');
 });
 
-test('restoring a repo session keeps its target and focused file', async () => {
+test('returning to a repository restores its target, viewed file and that target\'s conversation', async () => {
   const { context, get, run } = loadClient(url => {
     if (url === '/api/repos/B/commits') return Promise.resolve({ json: async () => ({
       success: true, presets: [], dirtyCount: 1,
@@ -164,9 +171,11 @@ test('restoring a repo session keeps its target and focused file', async () => {
     }) });
     return keeperResponse();
   });
-  run("repoSessions.set('B', { conversationHistory: [{ role: 'assistant', content: 'saved' }],"
+  run("activeRepo = { id: 'A', name: 'A', path: '/repo/A' };"
+    + "lastRepoView.set('B', { target: 'C1', viewFile: 'file.js' });"
+    + "mentorSessions.set(sessionKey('B', 'C1'), { conversationHistory: [{ role: 'assistant', content: 'saved' }],"
     + " mentorSnapshotId: 'snap', mentorResolvedTarget: 'C1', mentorRequestedTarget: 'C1',"
-    + " target: 'C1', focusFile: 'file.js', chatHtml: '<div>saved</div>' })");
+    + " scopeFile: 'file.js', chatHtml: '<div>saved</div>' })");
   await context.selectRepo({ id: 'B', name: 'B', path: '/repo/B' });
   await new Promise(resolve => setImmediate(resolve));
   await new Promise(resolve => setImmediate(resolve));
@@ -174,6 +183,7 @@ test('restoring a repo session keeps its target and focused file', async () => {
   assert.equal(get('currentFocusFile'), 'file.js');
   assert.equal(get('conversationHistory.length'), 1);
   assert.equal(get('mentorRequestedTarget'), 'C1');
+  assert.equal(get('mentorScope.file'), 'file.js');
 });
 
 test('a snapshot that no longer matches the selection is dropped so the next request starts over', async () => {
@@ -202,8 +212,8 @@ test('a snapshot that no longer matches the selection is dropped so the next req
   assert.equal(bodies[2].history.length, 0);
 });
 
-test('a restored focus that disappeared clears the stale session', async () => {
-  const { context, get, run } = loadClient(url => {
+test('a conversation about a file that disappeared ends with a visible notice', async () => {
+  const { context, get, run, nodes } = loadClient(url => {
     if (url === '/api/repos/B/commits') return Promise.resolve({ json: async () => ({
       success: true, presets: [], dirtyCount: 1,
       commits: [{ hash: 'C1', shortHash: 'C1', msg: 'one', author: 'T', relTime: 'now' }]
@@ -214,15 +224,20 @@ test('a restored focus that disappeared clears the stale session', async () => {
     }) });
     return keeperResponse();
   });
-  run("repoSessions.set('B', { conversationHistory: [{ role: 'assistant', content: 'saved' }],"
+  run("activeRepo = { id: 'A', name: 'A', path: '/repo/A' };"
+    + "lastRepoView.set('B', { target: 'C1', viewFile: 'gone.js' });"
+    + "mentorSessions.set(sessionKey('B', 'C1'), { conversationHistory: [{ role: 'assistant', content: 'saved' }],"
     + " mentorSnapshotId: 'snap', mentorResolvedTarget: 'C1', mentorRequestedTarget: 'C1',"
-    + " target: 'C1', focusFile: 'gone.js', chatHtml: '<div>saved</div>' })");
+    + " scopeFile: 'gone.js', chatHtml: '<div>saved</div>' })");
   await context.selectRepo({ id: 'B', name: 'B', path: '/repo/B' });
   await new Promise(resolve => setImmediate(resolve));
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(get('currentFocusFile'), null);
   assert.equal(get('conversationHistory.length'), 0);
   assert.equal(get('mentorSnapshotId'), null);
+  assert.equal(get("mentorSessions.has(sessionKey('B', 'C1'))"), false);
+  assert.match(nodes.get('mentor-undo-text').textContent, /gone\.js 已不在当前改动中/);
+  assert.equal(nodes.get('btn-undo-clear').classList.contains('hidden'), true);
 });
 
 test('rapid chunks render once on completion without losing text', async () => {
@@ -296,4 +311,69 @@ test('a session token rejected after a service restart is refreshed once', async
   await client.context.loadModels();
   assert.equal(calls, 2);
   assert.equal(client.get('modelsReady'), true);
+});
+
+test('a fresh analysis takes the viewed file as scope, and clearing it can be undone', async () => {
+  const { context, get, nodes, bodies } = analyzeClient(call => answer(`snap-${call}`, `q${call}`));
+  context.setFocusFile('src/a.js');
+  await context.startMentorAnalysis('walkthrough', '', false);
+  assert.equal(bodies[0].focusFile, 'src/a.js');
+  assert.equal(nodes.get('mentor-scope-text').textContent, '讨论范围：a.js');
+
+  context.clearCurrentMentorSession();
+  assert.equal(get('conversationHistory.length'), 0);
+  assert.equal(get("mentorSessions.has(sessionKey('B', 'HEAD'))"), false);
+  assert.equal(nodes.get('btn-undo-clear').classList.contains('hidden'), false);
+  context.undoClearMentorSession();
+  assert.equal(get('conversationHistory.length'), 2);
+  assert.equal(get('mentorSnapshotId'), 'snap-1');
+  assert.equal(get('mentorScope.file'), 'src/a.js');
+  assert.equal(get("mentorSessions.has(sessionKey('B', 'HEAD'))"), true);
+
+  // An undo offered before a newer conversation started never replaces it.
+  context.clearCurrentMentorSession();
+  await context.startMentorAnalysis('walkthrough', '', false);
+  context.undoClearMentorSession();
+  assert.equal(get('mentorSnapshotId'), 'snap-2');
+});
+
+test('code references resolve only to diff files, including paths run into Chinese prose', () => {
+  const { context } = loadClient(keeperResponse);
+  const paths = ['lib/mentor.js', 'public/app.js', 'test/app.js', '目录/中文.js'];
+  const refs = text => JSON.parse(JSON.stringify(context.findCodeRefs(text, paths)));
+  assert.deepEqual(refs('入口在 lib/mentor.js:41-52，端口:3300'),
+    [{ start: 4, stop: 23, file: 'lib/mentor.js', line: 41, end: 52 }]);
+  assert.equal(refs('mentor.js:7')[0].file, 'lib/mentor.js');
+  assert.equal(refs('b/lib/mentor.js#L9')[0].line, 9);
+  assert.deepEqual(refs('app.js:3 与 127.0.0.1:3300'), []);
+  assert.deepEqual(refs('见目录/中文.js:2').map(ref => [ref.start, ref.file]), [[1, '目录/中文.js']]);
+});
+
+test('a cited line lands on its new-file row, a deleted row, or the nearest change', () => {
+  const { context } = loadClient(keeperResponse);
+  const patch = 'diff --git a/a.js b/a.js\n--- a/a.js\n+++ b/a.js\n@@ -10,4 +10,4 @@\n keep\n-old\n+new\n tail\n';
+  const locate = (text, line) => JSON.parse(JSON.stringify(context.locateDiffLine(text, line)));
+  assert.deepEqual(locate(patch, 11), { row: 6, exact: true });
+  assert.deepEqual(locate(patch, 10), { row: 4, exact: true });
+  assert.deepEqual(locate(patch, 40), { row: 7, exact: false });
+  assert.deepEqual(locate('@@ -5,2 +5,0 @@\n-gone\n-also\n', 6), { row: 2, exact: true });
+  assert.match(context.renderFormattedDiff(patch), /data-row="6"><span class="diff-num">11</);
+});
+
+test('selected diff rows become a question quoting file, real lines and code', () => {
+  const { context, run } = loadClient(keeperResponse);
+  const a = 'diff --git a/a.js b/a.js\n--- a/a.js\n+++ b/a.js\n@@ -10,4 +10,4 @@\n keep\n-old\n+new\n tail\n';
+  const b = 'diff --git a/b.js b/b.js\n@@ -1 +1 @@\n-x\n+y\n';
+  context.__files = [{ path: 'a.js', patch: a }, { path: 'b.js', patch: b }];
+  run('currentDiffFiles = __files; currentFocusFile = null;');
+  assert.equal(context.selectionPrompt(5, 7), '关于 a.js:11-12：\n```diff\n-old\n+new\n tail\n```\n\n');
+  assert.equal(context.selectionPrompt(7, 13),
+    '关于 a.js:12：\n```diff\n tail\n```\n\n关于 b.js:1：\n```diff\n@@ -1 +1 @@\n-x\n+y\n```\n\n');
+  run("currentFocusFile = 'b.js';");
+  assert.match(context.selectionPrompt(2, 2), /^关于 b\.js（旧版本第 1 行）/);
+  context.__files = [{ path: 'big.js', patch: '@@ -0,0 +1,300 @@\n' + Array.from({ length: 300 }, (_, i) => `+line${i}`).join('\n') }];
+  run('currentDiffFiles = __files; currentFocusFile = null;');
+  const quoted = context.selectionPrompt(0, 300);
+  assert.equal(quoted.split('\n').filter(line => line.startsWith('+line')).length, 119);
+  assert.match(quoted, /已截取/);
 });

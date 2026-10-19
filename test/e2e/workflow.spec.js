@@ -53,9 +53,39 @@ test('narrow layout supports snapshot follow-ups, clipboard and Markdown export'
   const download = await downloadPromise;
   expect(fs.readFileSync(await download.path(), 'utf8')).toContain('const result = 42;');
   await page.locator('[data-action="panel"][data-value="diff"]').click(); await page.locator('[data-action="focus"]').click();
+  expect(await page.evaluate(() => mentorSnapshotId)).toBe('browser-snapshot');
+  expect(await page.evaluate(() => conversationHistory.length)).toBe(3);
+  await page.locator('[data-action="panel"][data-value="mentor"]').click();
+  await page.locator('#btn-scope-new').click();
   expect(await page.evaluate(() => mentorSnapshotId)).toBeNull();
   expect(await page.evaluate(() => conversationHistory.length)).toBe(0);
+  await page.locator('#btn-undo-clear').click();
+  expect(await page.evaluate(() => conversationHistory.length)).toBe(3);
+  await expect(page.locator('.copy-code-btn')).toHaveCount(2);
   expect(await page.evaluate(() => document.body.scrollWidth <= innerWidth)).toBe(true);
+});
+
+test('answer references open the cited diff line and selected lines become a quoted question', async ({ page }) => {
+  const patch = 'diff --git a/src/app.js b/src/app.js\n--- a/src/app.js\n+++ b/src/app.js\n@@ -10,3 +10,3 @@\n keep\n-old\n+new\n tail\n';
+  await fixture(page, { path: 'src/app.js', patch });
+  await page.route('**/api/mentor/analyze', route => route.fulfill({ contentType: 'text/event-stream', body: stream('改动在 `src/app.js:11`，随后 app.js:12 收尾。') }));
+  await page.goto('/');
+  await page.locator('#btn-walkthrough').click();
+  await expect(page.locator('.mentor-prose .code-ref')).toHaveCount(2);
+  await page.locator('.mentor-prose .code-ref').first().click();
+  await expect(page.locator('#diff-content .diff-line-ref .diff-text')).toHaveText('+new');
+  await expect(page.locator('#mentor-scope-text')).toHaveText('讨论范围：全部文件');
+  expect(await page.evaluate(() => conversationHistory.length)).toBe(1);
+
+  await page.evaluate(() => {
+    const rows = document.querySelectorAll('#diff-content .diff-line');
+    const range = document.createRange();
+    range.setStart(rows[5].querySelector('.diff-text').firstChild, 0);
+    range.setEnd(rows[7].querySelector('.diff-text').firstChild, 3);
+    getSelection().removeAllRanges(); getSelection().addRange(range);
+  });
+  await page.locator('#btn-ask-selection').click();
+  await expect(page.locator('#mentor-input')).toHaveValue(/^关于 src\/app\.js:11-12：\n```diff\n-old\n\+new\n tail\n```/);
 });
 
 test('large Diff pages retain correct line numbers and full copy', async ({ page, context }) => {

@@ -315,6 +315,44 @@ body {
   transform: translateY(-1px);
 }
 
+/* 讨论范围与撤销提示 */
+.mentor-scope-bar, .mentor-undo-bar {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 6px 16px; font-size: 11px; color: var(--text-muted);
+  border-bottom: 1px solid var(--border-app); background: var(--bg-header);
+}
+.mentor-scope-bar svg { color: var(--accent-terracotta); }
+#mentor-scope-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#btn-scope-new, #btn-undo-clear {
+  display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 9999px;
+  color: var(--accent-terracotta); border: 1px solid var(--accent-terracotta-border); background: var(--accent-terracotta-bg);
+}
+#btn-scope-new:hover, #btn-undo-clear:hover { border-color: var(--accent-terracotta); }
+.mentor-undo-bar { color: var(--text-secondary); }
+
+/* 回答中的代码引用与 Diff 定位 */
+.mentor-prose .code-ref {
+  font: inherit; color: var(--accent-terracotta); background: none; border: 0; padding: 0; cursor: pointer;
+  text-decoration: underline dotted; text-underline-offset: 3px;
+}
+.mentor-prose .code-ref:hover { text-decoration-style: solid; }
+.diff-line-ref {
+  box-shadow: inset 3px 0 0 var(--accent-terracotta);
+  background-image: linear-gradient(var(--accent-terracotta-bg), var(--accent-terracotta-bg));
+}
+.diff-ref-notice { padding: 6px 8px; font-size: 11px; color: var(--diff-hunk-text); white-space: normal; }
+.user-prompt { white-space: pre-wrap; overflow-wrap: anywhere; }
+.ask-selection-btn {
+  position: fixed; z-index: 50; display: inline-flex; align-items: center; gap: 6px;
+  padding: 5px 10px; border-radius: 9999px; font-size: 11px; color: #ffffff;
+  background: var(--accent-terracotta); box-shadow: 0 6px 18px -6px rgba(0, 0, 0, 0.35);
+}
+.ask-selection-btn:hover { background: var(--accent-terracotta-hover); }
+/* styles.css loads after Tailwind, so these display rules would beat .hidden */
+.mentor-undo-bar.hidden, .ask-selection-btn.hidden, #btn-scope-new.hidden, #btn-undo-clear.hidden { display: none; }
+#mentor-form { align-items: flex-end; }
+#mentor-input { resize: none; max-height: 160px; overflow-y: auto; line-height: 1.5; }
+
 /* Keeper 配额浮窗面板 */
 #keeper-detail-popover {
   background: var(--bg-surface);
