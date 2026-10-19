@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 import fs from 'node:fs';
-import { fixture } from './fixture.js';
+import { fixture, contrastReport } from './fixture.js';
 
 function stream(text, snapshot = {}) {
   return [{ type: 'snapshot', snapshotId: 'browser-snapshot', resolvedTarget: 'a'.repeat(40), ...snapshot }, { type: 'chunk', text }, { type: 'finished' }]
@@ -100,6 +100,26 @@ test('the first answer lists the evidence the model received', async ({ page }) 
   await expect(details.locator('summary')).toHaveText('本次依据：Diff 1 个文件 · 文档 1 份 · 源码 1 个文件 · 1 处截断');
   await details.locator('summary').click();
   await expect(details.locator('li')).toHaveText(['src/app.js', 'README.md', 'src/app.js：第 1-40, 90-120 行']);
+});
+
+test('both themes keep small text and Mermaid diagrams readable, redrawing diagrams on switch', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('mentor-theme', 'light'));
+  await fixture(page);
+  const diagram = '```mermaid\nsequenceDiagram\n  页面->>服务: 请求分析\n  服务-->>页面: 流式回答\n```';
+  await page.route('**/api/mentor/analyze', route => route.fulfill({ contentType: 'text/event-stream', body: stream(diagram) }));
+  await page.goto('/');
+  await page.locator('#btn-walkthrough').click();
+  await expect(page.locator('.mermaid svg')).toHaveCount(1);
+  for (const theme of ['neutral', 'dark']) {
+    if (theme === 'dark') {
+      await page.locator('#btn-theme-toggle').click();
+      await expect(page.locator('.mermaid')).toHaveAttribute('data-mermaid-theme', 'dark');
+      await expect(page.locator('.mermaid svg')).toHaveCount(1);
+    }
+    const report = await contrastReport(page);
+    expect(report['mermaid message text'], `${theme}: mermaid rendered`).toBeDefined();
+    for (const [pair, ratio] of Object.entries(report)) expect(ratio, `${theme}: ${pair}`).toBeGreaterThanOrEqual(4.5);
+  }
 });
 
 test('large Diff pages retain correct line numbers and full copy', async ({ page, context }) => {

@@ -109,6 +109,7 @@ function restoreSession(saved) {
   if (chatStream && saved.chatHtml) {
     chatStream.innerHTML = saved.chatHtml;
     lucide.createIcons();
+    redrawMermaid(chatStream);
   }
   renderMentorScope();
   return true;
@@ -243,12 +244,30 @@ function applyTheme(theme) {
       theme: isDark ? 'dark' : 'neutral',
       securityLevel: 'strict'
     });
+    redrawMermaid();
   }
 }
 
 function toggleTheme() {
   const currentIsDark = document.documentElement.classList.contains('dark');
   applyTheme(currentIsDark ? 'light' : 'dark');
+}
+
+const mermaidTheme = () => document.documentElement.classList.contains('dark') ? 'dark' : 'neutral';
+
+// A diagram keeps the colors of the theme it was drawn in. Redraw the ones
+// drawn in another theme from the source kept on their container.
+async function redrawMermaid(root = document) {
+  if (!window.mermaid) return;
+  const theme = mermaidTheme();
+  const nodes = Array.from(root.querySelectorAll('.mermaid[data-mermaid-source]')).filter(node => node.dataset.mermaidTheme !== theme);
+  if (!nodes.length) return;
+  for (const node of nodes) {
+    node.removeAttribute('data-processed');
+    node.textContent = node.dataset.mermaidSource;
+    node.dataset.mermaidTheme = theme;
+  }
+  try { await mermaid.run({ nodes }); } catch (error) { console.warn('Mermaid render error:', error); }
 }
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -538,7 +557,7 @@ async function loadRepos(refresh = false) {
   const refreshButton = document.getElementById('btn-refresh');
   refreshButton.disabled = true;
   const listEl = document.getElementById('repo-list');
-  listEl.innerHTML = '<div class="text-xs text-slate-500 text-center py-8">正在扫描本地 Git 仓库...</div>';
+  listEl.innerHTML = '<div class="text-xs text-[var(--text-muted)] text-center py-8">正在扫描本地 Git 仓库...</div>';
 
   try {
     const res = await apiFetch(`/api/repos${refresh ? '?refresh=1' : ''}`);
@@ -555,7 +574,7 @@ async function loadRepos(refresh = false) {
       selectRepo(allRepos[0]);
     }
   } catch (err) {
-    if (sequence === reposLoadSequence) listEl.innerHTML = `<div class="text-xs text-rose-400 text-center py-6">加载仓库失败: ${escapeHtml(err.message)}</div>`;
+    if (sequence === reposLoadSequence) listEl.innerHTML = `<div class="text-xs text-[var(--diff-del-text)] text-center py-6">加载仓库失败: ${escapeHtml(err.message)}</div>`;
   } finally {
     if (sequence === reposLoadSequence) refreshButton.disabled = false;
   }
@@ -564,7 +583,7 @@ async function loadRepos(refresh = false) {
 function renderRepoList(repos) {
   const listEl = document.getElementById('repo-list');
   if (repos.length === 0) {
-    listEl.innerHTML = '<div class="text-xs text-slate-500 text-center py-6">未发现 Git 仓库</div>';
+    listEl.innerHTML = '<div class="text-xs text-[var(--text-muted)] text-center py-6">未发现 Git 仓库</div>';
     return;
   }
 
@@ -716,7 +735,7 @@ async function selectRepo(repo) {
   branchBadge.classList.remove('hidden');
 
   const commitListEl = document.getElementById('commit-list');
-  commitListEl.innerHTML = '<div class="text-xs text-slate-500 text-center py-6">正在读取变动记录...</div>';
+  commitListEl.innerHTML = '<div class="text-xs text-[var(--text-muted)] text-center py-6">正在读取变动记录...</div>';
 
   try {
     const res = await apiFetch(`/api/repos/${repo.id}/commits`, { signal: controller.signal });
@@ -747,14 +766,14 @@ async function selectRepo(repo) {
     fetchDiff(repo.id, target);
   } catch (err) {
     if (sequence !== repoRequestSequence || err.name === 'AbortError') return;
-    commitListEl.innerHTML = `<div class="text-xs text-rose-400 text-center py-4">读取提交失败: ${escapeHtml(err.message)}</div>`;
+    commitListEl.innerHTML = `<div class="text-xs text-[var(--diff-del-text)] text-center py-4">读取提交失败: ${escapeHtml(err.message)}</div>`;
   }
 }
 
 function renderCommitList(commits) {
   const commitListEl = document.getElementById('commit-list');
   if (commits.length === 0) {
-    commitListEl.innerHTML = '<div class="text-xs text-slate-500 text-center py-6">暂无提交记录</div>';
+    commitListEl.innerHTML = '<div class="text-xs text-[var(--text-muted)] text-center py-6">暂无提交记录</div>';
     return;
   }
 
@@ -818,7 +837,7 @@ async function fetchDiff(repoId, target) {
   renderFileFilterChips([]);
   document.getElementById('diff-stat-badge').textContent = '加载中';
   const diffEl = document.getElementById('diff-content');
-  diffEl.innerHTML = '<div class="p-4 text-slate-500 font-mono text-xs">正在生成差异对比...</div>';
+  diffEl.innerHTML = '<div class="p-4 text-[var(--text-muted)] font-mono text-xs">正在生成差异对比...</div>';
 
   document.getElementById('diff-target-label').textContent =
     target === 'working-tree' ? '当前未提交变动 (Working Tree)' :
@@ -896,7 +915,7 @@ async function fetchDiff(repoId, target) {
     renderActiveDiff();
   } catch (err) {
     if (sequence !== diffRequestSequence || err.name === 'AbortError') return;
-    diffEl.innerHTML = `<div class="p-4 text-rose-400 text-xs font-mono">获取 Diff 失败: ${escapeHtml(err.message)}</div>`;
+    diffEl.innerHTML = `<div class="p-4 text-[var(--diff-del-text)] text-xs font-mono">获取 Diff 失败: ${escapeHtml(err.message)}</div>`;
   }
 }
 
@@ -904,7 +923,7 @@ async function fetchDiff(repoId, target) {
 function renderFileFilterChips(files) {
   const container = document.getElementById('file-filter-chips');
   if (!files || files.length === 0) {
-    container.innerHTML = '<span class="text-slate-500 text-[10px]">无变动文件</span>';
+    container.innerHTML = '<span class="text-[var(--text-muted)] text-[10px]">无变动文件</span>';
     return;
   }
 
@@ -962,12 +981,12 @@ function showPanel(panel) {
 function renderActiveDiff(resetPage = true) {
   if (resetPage) diffPage = 0;
   const diffEl = document.getElementById('diff-content');
-  if (!currentDiffFiles.length) { diffEl.innerHTML = '<span class="text-slate-500">// 无差异内容</span>'; return; }
+  if (!currentDiffFiles.length) { diffEl.innerHTML = '<span class="text-[var(--text-muted)]">// 无差异内容</span>'; return; }
   const text = diffViewSegments().map(segment => segment.file.patch).join('\n\n');
   const total = text.split('\n').length;
   const perPage = DIFF_PAGE_SIZE, pages = Math.ceil(total / perPage);
   diffPage = Math.max(0, Math.min(pages - 1, diffPage));
-  const warnings = currentDiffWarnings.length ? `<div class="p-2 text-amber-300 text-xs">${currentDiffWarnings.map(escapeHtml).join('<br>')}</div>` : '';
+  const warnings = currentDiffWarnings.length ? `<div class="p-2 text-[var(--diff-hunk-text)] text-xs">${currentDiffWarnings.map(escapeHtml).join('<br>')}</div>` : '';
   const navigation = pages > 1 ? `<div class="diff-pagination">
     <span>第 ${diffPage + 1} / ${pages} 页 · 共 ${total} 行 · 复制保留完整 Diff</span>
     <button data-action="diff-page" data-value="${diffPage - 1}" ${diffPage === 0 ? 'disabled' : ''}>上一页</button>
@@ -977,7 +996,7 @@ function renderActiveDiff(resetPage = true) {
 }
 
 function renderFormattedDiff(rawDiff, start = 0, count = Infinity) {
-  if (!rawDiff?.trim()) return '<span class="text-slate-500">// 无差异内容</span>';
+  if (!rawDiff?.trim()) return '<span class="text-[var(--text-muted)]">// 无差异内容</span>';
   const output = [];
   for (const row of walkDiff(rawDiff.split('\n'))) {
     if (row.index >= start + count) break;
@@ -988,8 +1007,8 @@ function renderFormattedDiff(rawDiff, start = 0, count = Infinity) {
 }
 
 const DIFF_ROW_CLASS = {
-  hunk: 'diff-line-hunk', file: 'text-indigo-400 font-bold mt-3 mb-1',
-  add: 'diff-line-add', del: 'diff-line-del', context: '', meta: 'text-slate-500'
+  hunk: 'diff-line-hunk', file: 'text-[var(--diff-hunk-text)] font-bold mt-3 mb-1',
+  add: 'diff-line-add', del: 'diff-line-del', context: '', meta: 'text-[var(--text-muted)]'
 };
 
 // Walks patch lines once, tracking hunk line numbers. The renderer and code
@@ -1245,7 +1264,7 @@ async function copyCurrentDiff() {
   try {
     await navigator.clipboard.writeText(textToCopy);
     if (btn) {
-      btn.innerHTML = '<i data-lucide="check" class="w-3 h-3 text-emerald-400"></i> 已复制';
+      btn.innerHTML = '<i data-lucide="check" class="w-3 h-3 text-[var(--diff-add-text)]"></i> 已复制';
       lucide.createIcons();
       setTimeout(() => {
         btn.innerHTML = '<i data-lucide="copy" class="w-3 h-3"></i> 复制Diff';
@@ -1447,7 +1466,7 @@ async function startMentorAnalysis(mode, customPrompt = '', resetSession = false
             if (!isCurrent()) return;
             if (mentorResolvedTarget) {
               const evidenceNotice = document.createElement('p');
-              evidenceNotice.className = 'text-[10px] text-slate-500 mt-2';
+              evidenceNotice.className = 'text-[10px] text-[var(--text-muted)] mt-2';
               const evidenceTarget = mentorResolvedTarget === 'working-tree' ? '读取时的工作区' : mentorResolvedTarget;
               evidenceNotice.textContent = snapshotRenewed
                 ? `分析快照已在会话中重新捕获: ${evidenceTarget} · 早先回答可能基于旧证据`
@@ -1458,7 +1477,7 @@ async function startMentorAnalysis(mode, customPrompt = '', resetSession = false
             if (currentTurnUsage) {
               const numeric = key => Math.max(0, Number(currentTurnUsage[key]) || 0);
               const usage = document.createElement('div');
-              usage.className = 'mt-4 pt-3 border-t border-slate-800 text-xs text-slate-500';
+              usage.className = 'mt-4 pt-3 border-t border-[var(--border-app)] text-xs text-[var(--text-muted)]';
               usage.textContent = `本次分析: ${numeric('total_tokens')} tokens (输入: ${numeric('prompt_tokens')}, 输出: ${numeric('completion_tokens')})`;
               footerEl.appendChild(usage);
             }
@@ -1483,7 +1502,7 @@ async function startMentorAnalysis(mode, customPrompt = '', resetSession = false
     if (!currentTurnMarkdown) article.innerHTML = '';
     if (controller.signal.aborted) {
       const notice = document.createElement('p');
-      notice.className = 'text-slate-500 text-xs mt-2';
+      notice.className = 'text-[var(--text-muted)] text-xs mt-2';
       notice.textContent = '已终止生成，未保存未完成的回答';
       article.appendChild(notice);
     } else {
@@ -1495,7 +1514,7 @@ async function startMentorAnalysis(mode, customPrompt = '', resetSession = false
         if (activeRepo) mentorSessions.delete(sessionKey(activeRepo.id, activeTarget));
       }
       const notice = document.createElement('p');
-      notice.className = 'text-rose-400 text-xs mt-2';
+      notice.className = 'text-[var(--diff-del-text)] text-xs mt-2';
       notice.textContent = staleSnapshot
         ? `分析快照已失效: ${err.message}。下一次精读或提问会重新建立快照。`
         : `分析失败: ${err.message}`;
@@ -1642,7 +1661,7 @@ async function copyMentorNotes() {
   try {
     await navigator.clipboard.writeText(fullMarkdown);
     const copyBtn = document.getElementById('btn-copy-mentor');
-    copyBtn.innerHTML = '<i data-lucide="check" class="w-3.5 h-3.5 text-emerald-400"></i> 已复制!';
+    copyBtn.innerHTML = '<i data-lucide="check" class="w-3.5 h-3.5 text-[var(--diff-add-text)]"></i> 已复制!';
     lucide.createIcons();
     setTimeout(() => {
       copyBtn.innerHTML = '<i data-lucide="copy" class="w-3.5 h-3.5"></i> 复制笔记';
@@ -1716,8 +1735,8 @@ async function postProcessArticle(article) {
     const header = document.createElement('div');
     header.className = 'code-block-header';
     header.innerHTML = `
-      <span class="text-slate-400 uppercase font-mono">${escapeHtml(lang)}</span>
-      <button class="copy-code-btn text-slate-400 hover:text-slate-100 flex items-center gap-1 transition text-[10px]">
+      <span class="text-[var(--text-muted)] uppercase font-mono">${escapeHtml(lang)}</span>
+      <button class="copy-code-btn text-[var(--text-muted)] hover:text-[var(--text-primary)] flex items-center gap-1 transition text-[10px]">
         <i data-lucide="copy" class="w-3 h-3"></i> 复制代码
       </button>
     `;
@@ -1735,12 +1754,16 @@ async function postProcessArticle(article) {
       const code = block.textContent;
       const pre = block.parentElement;
       const container = document.createElement('div');
-      container.className = 'mermaid my-4 p-4 bg-slate-900 rounded-lg border border-slate-800 flex justify-center';
+      container.className = 'mermaid mermaid-box my-4 p-4 rounded-lg flex justify-center';
+      // Kept so a theme switch can redraw the diagram from its source.
+      container.dataset.mermaidSource = code;
+      container.dataset.mermaidTheme = mermaidTheme();
       container.textContent = code;
       pre.replaceWith(container);
     }
     try {
-      await mermaid.run({ nodes: Array.from(article.querySelectorAll('.mermaid')) });
+      // Only containers built here: sanitized answers cannot carry data attributes.
+      await mermaid.run({ nodes: Array.from(article.querySelectorAll('.mermaid[data-mermaid-source]')) });
     } catch (e) {
       console.warn('Mermaid render error:', e);
     }

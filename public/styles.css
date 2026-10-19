@@ -21,7 +21,7 @@
   --border-focus: #cc785c;
   --text-primary: #201e1b;
   --text-secondary: #565149;
-  --text-muted: #827b70;
+  --text-muted: #6b655b;
   --text-subtle: #a69f93;
   --accent-terracotta: #cc785c;
   --accent-terracotta-hover: #b86246;
@@ -352,6 +352,9 @@ body {
 .mentor-undo-bar.hidden, .ask-selection-btn.hidden, #btn-scope-new.hidden, #btn-undo-clear.hidden { display: none; }
 #mentor-form { align-items: flex-end; }
 #mentor-input { resize: none; max-height: 160px; overflow-y: auto; line-height: 1.5; }
+
+/* Mermaid 图跟随主题背景；图本身在切换主题时按源码重绘 */
+.mermaid-box { background: var(--code-block-bg); border: 1px solid var(--code-block-border); }
 
 /* 本次依据：模型实际收到的 Diff、文档与源码范围 */
 .evidence-details { margin-top: 6px; font-size: 11px; color: var(--text-secondary); }

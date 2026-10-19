@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import fs from 'node:fs';
 import { relayCompletion, requestLifecycle, readSSE } from '../lib/stream.js';
 import { loadClient, eventResponse, keeperResponse } from './client-helper.js';
 
@@ -352,6 +353,11 @@ test('the first answer lists its evidence; follow-ups on the same snapshot do no
   const items = first.children.filter(child => child.children.length && !child.className).flatMap(ul => ul.children.map(li => li.textContent));
   assert.deepEqual(items, ['src/a.js', 'README.md（第 1-80 行，已截断）', 'src/a.js：第 10-40, 90-95 行', '"x"：证据不可读取或已排除']);
   assert.equal(details(footers[1]), undefined);
+});
+
+test('the client colors text with theme variables, not fixed palette shades', () => {
+  const source = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  assert.deepEqual(source.match(/\b(?:text|bg|border)-(?:slate|rose|emerald|amber|indigo)-\d+/g) ?? [], []);
 });
 
 test('code references resolve only to diff files, including paths run into Chinese prose', () => {
