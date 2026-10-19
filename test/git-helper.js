@@ -15,3 +15,22 @@ export function gitFixture(t) {
   const commit = message => { git('add', '-A'); git('commit', '-qm', message); return git('rev-parse', 'HEAD').trim(); };
   return { root, git, write, commit };
 }
+
+// Counts git processes started while `fn` runs, through a PATH shim. Each test
+// file runs in its own process and its tests run in order, so the PATH change
+// cannot reach other tests.
+export function gitSpawnCounter(t) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mentor-git-shim-'));
+  const log = path.join(dir, 'calls.log'); fs.writeFileSync(log, '');
+  const real = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
+  fs.writeFileSync(path.join(dir, 'git'), `#!/bin/sh\necho x >> '${log}'\nexec '${real}' "$@"\n`, { mode: 0o755 });
+  const previous = process.env.PATH;
+  process.env.PATH = `${dir}${path.delimiter}${previous}`;
+  t.after(() => { process.env.PATH = previous; fs.rmSync(dir, { recursive: true, force: true }); });
+  const calls = () => fs.readFileSync(log, 'utf8').split('\n').filter(Boolean).length;
+  return async fn => {
+    const before = calls();
+    const result = await fn();
+    return { result, spawns: calls() - before };
+  };
+}
