@@ -18,12 +18,14 @@ export function gitFixture(t) {
 
 // Counts git processes started while `fn` runs, through a PATH shim. Each test
 // file runs in its own process and its tests run in order, so the PATH change
-// cannot reach other tests.
-export function gitSpawnCounter(t) {
+// cannot reach other tests. `delay` (seconds) slows every git process, so
+// overlapping requests reliably overlap.
+export function gitSpawnCounter(t, { delay = 0 } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mentor-git-shim-'));
   const log = path.join(dir, 'calls.log'); fs.writeFileSync(log, '');
   const real = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
-  fs.writeFileSync(path.join(dir, 'git'), `#!/bin/sh\necho x >> '${log}'\nexec '${real}' "$@"\n`, { mode: 0o755 });
+  const pause = delay ? `sleep ${Number(delay)}\n` : '';
+  fs.writeFileSync(path.join(dir, 'git'), `#!/bin/sh\necho x >> '${log}'\n${pause}exec '${real}' "$@"\n`, { mode: 0o755 });
   const previous = process.env.PATH;
   process.env.PATH = `${dir}${path.delimiter}${previous}`;
   t.after(() => { process.env.PATH = previous; fs.rmSync(dir, { recursive: true, force: true }); });

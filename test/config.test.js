@@ -47,6 +47,33 @@ test('an empty config file falls through, and a key file readable by others is f
   assert.equal(getConfig({ configDir, dataDir }, root).proxyKeyLoose, false);
 });
 
+test('an empty timeout variable falls back to the default; an invalid one is rejected', t => {
+  const { root, dataDir } = dirs(t);
+  withEnv(t, { MODELS_TIMEOUT_MS: '', ANALYSIS_TIMEOUT_MS: '  ' });
+  const config = getConfig({ dataDir, proxyKey: '' }, root);
+  assert.deepEqual([config.modelsTimeout, config.analysisTimeout], [5000, 180000]);
+  process.env.MODELS_TIMEOUT_MS = ' 2500 ';
+  assert.equal(getConfig({ dataDir, proxyKey: '' }, root).modelsTimeout, 2500);
+  for (const value of ['0', '-1', '1.5', 'abc', '600001']) {
+    process.env.MODELS_TIMEOUT_MS = value;
+    assert.throws(() => getConfig({ dataDir, proxyKey: '' }, root), /超时配置/, value);
+  }
+});
+
+test('the models URL follows the proxy URL, and URLs with credentials are rejected', t => {
+  const { root, dataDir } = dirs(t);
+  withEnv(t, { PROXY_URL: undefined, MODELS_URL: undefined });
+  const config = options => getConfig({ dataDir, proxyKey: '', ...options }, root);
+  assert.equal(config().modelsUrl, 'http://127.0.0.1:8317/v1/models');
+  assert.equal(config({ proxyUrl: 'https://proxy.example.invalid/api/v1/chat/completions/' }).modelsUrl, 'https://proxy.example.invalid/api/v1/models');
+  assert.equal(config({ proxyUrl: 'http://127.0.0.1:9000/v1/chat/completions', modelsUrl: 'http://127.0.0.1:9001/list' }).modelsUrl, 'http://127.0.0.1:9001/list');
+  process.env.PROXY_URL = 'http://127.0.0.1:9100/v1/chat/completions';
+  assert.equal(config().modelsUrl, 'http://127.0.0.1:9100/v1/models');
+  assert.throws(() => config({ proxyUrl: 'http://user:pass@127.0.0.1:8317/v1/chat/completions' }), /PROXY_URL/);
+  assert.throws(() => config({ proxyUrl: 'file:///etc/hosts' }), /PROXY_URL/);
+  assert.throws(() => config({ modelsUrl: 'http://user@127.0.0.1:8317/v1/models' }), /MODELS_URL/);
+});
+
 test('the default config directory follows an absolute XDG_CONFIG_HOME', () => {
   const home = path.join(os.homedir(), '.config', 'tech-mentor-studio');
   assert.equal(defaultConfigDir({ XDG_CONFIG_HOME: '/x/config' }), '/x/config/tech-mentor-studio');

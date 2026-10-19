@@ -44,6 +44,23 @@ test('a repository scan starts at most three git processes per repository, two o
   assert.ok(second.result.repos.filter(repo => repo.lastCommit).every(repo => repo.lastCommit.msg === 'first'));
 });
 
+test('concurrent refreshes share one scan, and a corrupt watchlist is reported without being rewritten', async t => {
+  const { root } = gitFixture(t);
+  const dataDir = path.join(root, '.git', 'mentor-test-data');
+  const { request } = await appFixture(t, root, { dataDir });
+  await request('/api/repos?refresh=1'); // registers and verifies the repository
+  const count = gitSpawnCounter(t, { delay: 0.2 }); // a scan takes > 0.4 s, so the requests overlap
+  const single = await count(async () => (await request('/api/repos?refresh=1')).json());
+  const both = await count(() => Promise.all([1, 2].map(async () => (await request('/api/repos?refresh=1')).json())));
+  assert.deepEqual(both.result.map(body => body.repos.length), [1, 1]);
+  assert.equal(both.spawns, single.spawns, `two concurrent refreshes started ${both.spawns} git processes, one started ${single.spawns}`);
+  fs.writeFileSync(path.join(dataDir, 'watchlist.json'), '{broken');
+  const response = await request('/api/repos?refresh=1');
+  assert.equal(response.status, 500);
+  assert.match((await response.json()).error, /关注列表无法读取/);
+  assert.equal(fs.readFileSync(path.join(dataDir, 'watchlist.json'), 'utf8'), '{broken');
+});
+
 test('the diff response carries each patch once, in files', async t => {
   const { root, write, commit } = gitFixture(t); write('code.js', 'old\n'); commit('first'); write('code.js', 'new\n');
   const { request } = await appFixture(t, root);
