@@ -12,7 +12,7 @@ const completion = () => new Response('data: {"choices":[{"delta":{"content":"an
 const events = text => text.split('\n').filter(line => line.startsWith('data: ')).map(line => JSON.parse(line.slice(6)));
 const hasGitleaks = (() => { try { execFileSync('gitleaks', ['version'], { stdio: 'ignore' }); return true; } catch { return false; } })();
 const analyzeWith = request => (root, body = {}) => request('/api/mentor/analyze', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({ repoPath: root, target: 'working-tree', ...body }) });
+  body: JSON.stringify({ repoPath: root, target: 'working-tree', mode: 'anatomy', ...body }) });
 
 test('common secret files are excluded by name, ordinary files are not', () => {
   for (const name of ['.env', '.env.local', '.envrc', 'deploy/.envrc', '.git-credentials', 'auth.json', 'terraform.tfvars', 'prod.auto.tfvars',

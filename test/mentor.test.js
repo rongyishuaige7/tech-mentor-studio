@@ -18,7 +18,7 @@ test('follow-ups retain the original worktree evidence after files change', asyn
   const payloads = [];
   const { request } = await appFixture(t, root, { fetchImpl: async (url, options) => { payloads.push(JSON.parse(options.body)); return completion(); } });
   await request('/api/repos');
-  const analyze = body => request('/api/mentor/analyze', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ repoPath: root, target: 'working-tree', ...body }) });
+  const analyze = body => request('/api/mentor/analyze', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ repoPath: root, target: 'working-tree', mode: 'anatomy', ...body }) });
   const first = events(await (await analyze({})).text());
   const snapshot = first.find(event => event.type === 'snapshot'); assert.ok(snapshot?.snapshotId);
   const context = payloads[0].messages[1].content;
@@ -62,7 +62,7 @@ test('snapshot limits and whole-round history trimming are explicit', () => {
 test('clean worktree fallback reports the actual analyzed commit', async t => {
   const { root, write, commit } = gitFixture(t); write('code.js', 'code\n'); const head = commit('first');
   const { request } = await appFixture(t, root, { fetchImpl: async () => completion() }); await request('/api/repos');
-  const response = await request('/api/mentor/analyze', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ repoPath: root }) });
+  const response = await request('/api/mentor/analyze', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ repoPath: root, mode: 'anatomy' }) });
   const snapshot = events(await response.text()).find(event => event.type === 'snapshot');
   assert.equal(snapshot.resolvedTarget, head);
   assert.equal(snapshot.requestedTarget, 'working-tree');
@@ -78,7 +78,7 @@ test('follow-ups keep the requested target across clean fallback and ranges', as
   });
   await request('/api/repos');
   const analyze = body => request('/api/mentor/analyze', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ repoPath: root, ...body })
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ repoPath: root, mode: 'anatomy', ...body })
   });
 
   const clean = events(await (await analyze({ target: 'working-tree' })).text()).find(event => event.type === 'snapshot');
@@ -106,7 +106,7 @@ test('the first snapshot lists what the model was given; follow-ups reuse it wit
   write('src/code.js', 'manifest-has-no-contents\n');
   const { request } = await appFixture(t, root, { fetchImpl: async () => completion() });
   await request('/api/repos');
-  const analyze = body => request('/api/mentor/analyze', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ repoPath: root, target: 'working-tree', ...body }) });
+  const analyze = body => request('/api/mentor/analyze', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ repoPath: root, target: 'working-tree', mode: 'anatomy', ...body }) });
   const first = events(await (await analyze({})).text()).find(event => event.type === 'snapshot');
   assert.deepEqual(first.evidence.diff, { files: [{ path: 'src/code.js', truncated: false }], omitted: 0 });
   assert.deepEqual(first.evidence.documents, [{ path: 'README.md', truncated: false, ranges: [[1, 1]] }]);
@@ -163,7 +163,7 @@ test('an idle snapshot slides, and an expired one is renewed visibly with the co
   const { request } = await appFixture(t, root, { snapshots: new SnapshotStore({ ttl: 1000, now: () => now }),
     fetchImpl: async (url, options) => { payloads.push(JSON.parse(options.body)); return completion(); } });
   await request('/api/repos');
-  const analyze = body => request('/api/mentor/analyze', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ repoPath: root, target: 'working-tree', ...body }) });
+  const analyze = body => request('/api/mentor/analyze', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ repoPath: root, target: 'working-tree', mode: 'anatomy', ...body }) });
 
   const snapshot = events(await (await analyze({ mode: 'pitfalls' })).text()).find(event => event.type === 'snapshot');
   assert.match(snapshot.instruction, /边界条件/); assert.equal(snapshot.renewed, false);
@@ -192,4 +192,40 @@ test('an idle snapshot slides, and an expired one is renewed visibly with the co
   assert.match(payloads.at(-1).messages[1].content, /重新捕获/);
   assert.deepEqual(payloads.at(-1).messages.slice(2, -1), history);
   assert.equal((await analyze({ mode: 'custom', customPrompt: '   ' })).status, 400);
+});
+
+test('a walkthrough reads the whole project instead of the selected commit', async t => {
+  const { root, write, commit } = gitFixture(t);
+  write('package.json', JSON.stringify({ name: 'demo', main: 'server.js', dependencies: { express: '^4.21.2' } }, null, 2));
+  write('server.js', "import { helper } from './lib/helper.js';\napp.get('/api/health', (req, res) => res.end());\n");
+  write('lib/helper.js', 'export const helper = () => 1;\n');
+  write('lib/deep.js', 'export const deep = () => 2;\n');
+  commit('first');
+  write('README.md', '# demo\n'); commit('second');
+  const payloads = [];
+  const { request } = await appFixture(t, root, { fetchImpl: async (url, options) => { payloads.push(JSON.parse(options.body)); return completion(); } });
+  await request('/api/repos');
+  const analyze = body => request('/api/mentor/analyze', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ repoPath: root, target: 'HEAD', mode: 'walkthrough', ...body })
+  });
+
+  const snapshot = events(await (await analyze({})).text()).find(event => event.type === 'snapshot');
+  assert.equal(snapshot.requestedTarget, 'project');
+  assert.equal(snapshot.evidence.scope, 'project');
+  const context = payloads[0].messages[1].content;
+  assert.match(context, /分析范围：整个项目/);
+  for (const tag of ['tree', 'deps', 'imports', 'endpoints']) assert.match(context, new RegExp(`<${tag}>`));
+  assert.doesNotMatch(context, /<diff>/);
+  // deep.js is not in the latest commit; a project walkthrough still sees it.
+  assert.match(context, /lib\/deep\.js/);
+
+  const follow = await analyze({ snapshotId: snapshot.snapshotId, history: [{ role: 'assistant', content: 'answer' }], customPrompt: 'why' });
+  assert.match(await follow.text(), /finished/);
+  assert.equal(payloads[1].messages[1].content, context);
+
+  // The diff modes keep reading the selected commit.
+  const anatomy = events(await (await analyze({ mode: 'anatomy' })).text()).find(event => event.type === 'snapshot');
+  assert.equal(anatomy.requestedTarget, 'HEAD');
+  assert.match(payloads.at(-1).messages[1].content, /<diff>/);
 });

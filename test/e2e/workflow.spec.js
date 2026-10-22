@@ -70,7 +70,7 @@ test('answer references open the cited diff line and selected lines become a quo
   await fixture(page, { path: 'src/app.js', patch });
   await page.route('**/api/mentor/analyze', route => route.fulfill({ contentType: 'text/event-stream', body: stream('改动在 `src/app.js:11`，随后 app.js:12 收尾。') }));
   await page.goto('/');
-  await page.locator('#btn-walkthrough').click();
+  await page.locator('#btn-anatomy').click();
   await expect(page.locator('.mentor-prose .code-ref')).toHaveCount(2);
   await page.locator('.mentor-prose .code-ref').first().click();
   await expect(page.locator('#diff-content .diff-line-ref .diff-text')).toHaveText('+new');
@@ -86,6 +86,35 @@ test('answer references open the cited diff line and selected lines become a quo
   });
   await page.locator('#btn-ask-selection').click();
   await expect(page.locator('#mentor-input')).toHaveValue(/^关于 src\/app\.js:11-12：\n```diff\n-old\n\+new\n tail\n```/);
+});
+
+test('the whole-project scope shows the inventory and a walkthrough reads it', async ({ page }) => {
+  await fixture(page);
+  const project = {
+    stats: { files: 12, codeFiles: 8, directories: 3, edges: 5, endpoints: 2, documents: 1 },
+    entryPoints: ['server.js'], hubs: [{ path: 'lib/security.js', count: 4 }],
+    deps: { express: '^4.21.2' }, documents: ['README.md'],
+    tree: './ (2)\n  server.js 1.0k\nlib/ (1)\n  security.js 2.0k',
+    endpoints: '服务端路由：\n  GET /api/health  server.js:4',
+    imports: '模块引用边：\n  server.js -> lib/security.js'
+  };
+  await page.route('**/api/repos/fixture/diff?target=project', route => route.fulfill({ json: {
+    success: true, target: 'project', resolvedTarget: 'a'.repeat(40), branch: 'main', project, hasFacts: true } }));
+  const payloads = [];
+  await page.route('**/api/mentor/analyze', route => {
+    payloads.push(route.request().postDataJSON());
+    return route.fulfill({ contentType: 'text/event-stream', body: stream('回答') });
+  });
+  await page.goto('/');
+  await page.locator('#commit-list [data-value="project"]').click();
+  await expect(page.locator('#diff-target-label')).toHaveText('整个项目 (Project)');
+  await expect(page.locator('#diff-content')).toContainText('引用边');
+  await expect(page.locator('#diff-content')).toContainText('lib/security.js');
+  await expect(page.locator('#diff-content')).toContainText('GET /api/health');
+  await page.locator('#btn-walkthrough').click();
+  await expect.poll(() => payloads.length).toBeGreaterThan(0);
+  expect(payloads[0].target).toBe('project');
+  expect(payloads[0].focusFile).toBe(null);
 });
 
 test('the first answer lists the evidence the model received', async ({ page }) => {

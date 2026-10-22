@@ -356,6 +356,9 @@ body {
 /* Mermaid 图跟随主题背景；图本身在切换主题时按源码重绘 */
 .mermaid-box { background: var(--code-block-bg); border: 1px solid var(--code-block-border); }
 
+/* 整个项目概览：中栏是 diff 的 pre-wrap 容器，概览需要按正常换行排版 */
+.project-overview { white-space: normal; }
+
 /* 解析失败的图：保留源码，而不是 mermaid 自带的 "Syntax error in text" 错误图 */
 .mermaid-fallback { border: 1px solid var(--code-block-border); border-radius: 0.5rem; overflow: hidden; background: var(--code-block-bg); }
 .mermaid-fallback .code-block-header { gap: 0.6rem; }

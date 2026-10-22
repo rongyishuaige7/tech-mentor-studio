@@ -175,7 +175,14 @@ function renderMentorScope() {
 
 // Starts a new analysis when there is no usable snapshot for the current
 // selection; otherwise the action becomes a follow-up on the same evidence.
-function triggerMentorAction(mode) {
+async function triggerMentorAction(mode) {
+  // Each action picks its natural scope first, and the diff is loaded before the
+  // request so file references in the answer resolve against it.
+  if (mode === 'walkthrough' && activeTarget !== 'project' && activeRepo) {
+    await selectTarget('project');
+  } else if (mode !== 'walkthrough' && activeTarget === 'project' && activeRepo) {
+    await selectTarget(currentCommits[0]?.hash || 'working-tree');
+  }
   return startMentorAnalysis(mode, '', false);
 }
 
@@ -865,7 +872,7 @@ async function handleAddRepoManual() {
 
 function isKnownTarget(target, data) {
   if (typeof target !== 'string' || !target) return false;
-  if (target === 'working-tree') return true;
+  if (target === 'working-tree' || target === 'project') return true;
   if ((data.commits || []).some(commit => commit.hash === target)) return true;
   if ((data.presets || []).some(preset => preset.hash === target)) return true;
   return /^[0-9a-f]{40}$/.test(target);
@@ -940,7 +947,28 @@ function renderCommitList(commits) {
   }
 
   const focused = focusedRow(commitListEl);
-  commitListEl.innerHTML = commits.map(c => {
+  // The whole project is a first-class scope: it is what a walkthrough reads.
+  const projectRow = `
+      <div data-action="target" data-value="project" role="button" tabindex="0" aria-current="${activeTarget === 'project' ? 'true' : 'false'}"
+           class="p-2 px-3 cursor-pointer transition flex items-center justify-between border-l-2 ${
+             activeTarget === 'project'
+               ? 'bg-[var(--bg-surface-hover)] border-[var(--accent-terracotta)] text-[var(--text-primary)] font-medium'
+               : 'border-transparent text-[var(--text-secondary)] hover:bg-[var(--bg-surface-hover)]'
+           }">
+        <div class="truncate mr-2">
+          <div class="text-xs truncate flex items-center gap-1.5">
+            <i data-lucide="layers" class="w-3 h-3 text-[var(--accent-terracotta)] shrink-0"></i>
+            整个项目（架构 / 技术栈 / 数据链路）
+          </div>
+          <div class="text-[10px] text-[var(--text-subtle)] mt-0.5 font-mono">
+            <span>全量清单</span> · <span>依赖图</span> · <span>HTTP 端点</span>
+          </div>
+        </div>
+        <span class="text-[10px] font-mono shrink-0 px-1.5 py-0.2 rounded bg-[var(--btn-action-bg)] border border-[var(--border-app)] text-[var(--text-muted)]">
+          PROJECT
+        </span>
+      </div>`;
+  commitListEl.innerHTML = projectRow + commits.map(c => {
     const isSelected = activeTarget === c.hash;
     const isWorkingTree = c.isWorkingTree;
 
@@ -972,6 +1000,44 @@ function renderCommitList(commits) {
   restoreFocus(commitListEl, focused);
 }
 
+// Whole-project scope: what the mentor will read, shown instead of a diff.
+function renderProjectOverview(project) {
+  const stats = project.stats || {};
+  const stat = (label, value) => `
+    <div class="px-3 py-2 rounded-lg bg-[var(--btn-action-bg)] border border-[var(--border-app)]">
+      <div class="text-[10px] text-[var(--text-muted)]">${label}</div>
+      <div class="text-sm font-mono text-[var(--text-primary)]">${escapeHtml(String(value))}</div>
+    </div>`;
+  const lines = text => String(text || '').split('\n').filter(Boolean);
+  const list = (items, render) => items.length
+    ? `<ul class="space-y-0.5">${items.map(item => `<li class="truncate">${render(item)}</li>`).join('')}</ul>`
+    : '<div class="text-[var(--text-subtle)]">—</div>';
+  const section = (title, body) => `
+    <div>
+      <div class="text-[11px] font-semibold text-[var(--text-secondary)] mb-1">${title}</div>
+      <div class="text-[11px] text-[var(--text-muted)]">${body}</div>
+    </div>`;
+  const entryPoints = Array.isArray(project.entryPoints) ? project.entryPoints : [];
+  const hubs = Array.isArray(project.hubs) ? project.hubs : [];
+  const dependencies = Object.entries(project.deps && typeof project.deps === 'object' ? project.deps : {})
+    .map(([name, version]) => `${name} ${version}`);
+  return `
+    <div class="project-overview p-4 space-y-4">
+      <div class="grid grid-cols-2 gap-2">
+        ${stat('跟踪文件', stats.files ?? 0)}
+        ${stat('源码文件', stats.codeFiles ?? 0)}
+        ${stat('目录', stats.directories ?? 0)}
+        ${stat('引用边', stats.edges ?? 0)}
+      </div>
+      ${Number(stats.dirty) ? `<div class="text-[10px] text-[var(--text-muted)]">工作区还有 ${Number(stats.dirty)} 个未提交改动：本快照读取 HEAD，未提交内容未计入。</div>` : ''}
+      ${section('入口', list(entryPoints, path => `<span class="font-mono">${escapeHtml(path)}</span>`))}
+      ${section('核心模块（被依赖最多）', list(hubs, hub => `<span class="font-mono">${escapeHtml(hub.path)}</span> ← ${Number(hub.count) || 0}`))}
+      ${section('HTTP 端点', list(lines(project.endpoints), line => `<span class="font-mono">${escapeHtml(line.trim())}</span>`))}
+      ${section('依赖', list(dependencies, line => `<span class="font-mono">${escapeHtml(line)}</span>`))}
+      ${section('目录清单', `<pre class="whitespace-pre overflow-x-auto font-mono text-[10px] leading-relaxed bg-[var(--code-block-bg)] border border-[var(--code-block-border)] rounded-lg p-3 max-h-72">${escapeHtml(project.tree || '')}</pre>`)}
+    </div>`;
+}
+
 // Switching target parks the current conversation and brings back the one
 // held for the new target, if any.
 window.selectTarget = (targetHash) => {
@@ -985,9 +1051,7 @@ window.selectTarget = (targetHash) => {
   renderMentorScope();
   renderCommitPresets(currentPresets);
   renderCommitList(currentCommits);
-  if (activeRepo) {
-    fetchDiff(activeRepo.id, targetHash);
-  }
+  return activeRepo ? fetchDiff(activeRepo.id, targetHash) : Promise.resolve();
 };
 
 // 3. 加载 Diff 内容与变动文件树
@@ -1004,6 +1068,7 @@ async function fetchDiff(repoId, target) {
   diffEl.innerHTML = '<div class="p-4 text-[var(--text-muted)] font-mono text-xs">正在生成差异对比...</div>';
 
   document.getElementById('diff-target-label').textContent =
+    target === 'project' ? '整个项目 (Project)' :
     target === 'working-tree' ? '当前未提交变动 (Working Tree)' :
     target.startsWith('range:') ? `聚合区间 ${target.slice(6)}` :
     target.includes('..') ? `区间对比 ${target}` :
@@ -1015,6 +1080,22 @@ async function fetchDiff(repoId, target) {
     if (!data.success) throw new Error(data.error);
 
     if (sequence !== diffRequestSequence || activeRepo?.id !== repoId) return;
+
+    if (target === 'project' && data.project) {
+      // Whole-project scope has no diff: show the inventory the mentor will read.
+      currentDiffFiles = [];
+      currentDiffWarnings = [];
+      currentFocusFile = null;
+      renderFileFilterChips([]);
+      renderMentorScope();
+      const factsBadge = document.getElementById('facts-badge');
+      factsBadge.classList.toggle('hidden', !data.hasFacts);
+      factsBadge.classList.toggle('flex', Boolean(data.hasFacts));
+      document.getElementById('diff-stat-badge').textContent = `整个项目 · ${data.project.stats.files} 文件`;
+      diffEl.innerHTML = renderProjectOverview(data.project);
+      lucide.createIcons();
+      return;
+    }
 
     // 更新事实源挂载指示器
     const factsBadge = document.getElementById('facts-badge');
@@ -1576,7 +1657,7 @@ async function startMentorAnalysis(mode, customPrompt = '', resetSession = false
     target: activeTarget,
     mode,
     customPrompt,
-    focusFile: scopeFile,
+    focusFile: activeTarget === 'project' ? null : scopeFile,
     model: modelSelect.value,
     history: sentHistory,
     snapshotId: mentorSnapshotId
@@ -1658,7 +1739,9 @@ async function startMentorAnalysis(mode, customPrompt = '', resetSession = false
             if (mentorResolvedTarget) {
               const evidenceNotice = document.createElement('p');
               evidenceNotice.className = 'text-[10px] text-[var(--text-muted)] mt-2';
-              const evidenceTarget = mentorResolvedTarget === 'working-tree' ? '读取时的工作区' : mentorResolvedTarget;
+              const evidenceTarget = mentorRequestedTarget === 'project'
+                ? `整个项目 @ ${String(mentorResolvedTarget).slice(0, 8)}`
+                : mentorResolvedTarget === 'working-tree' ? '读取时的工作区' : mentorResolvedTarget;
               evidenceNotice.textContent = snapshotRenewed
                 ? `分析快照已在会话中重新捕获: ${evidenceTarget} · 早先回答可能基于旧证据`
                 : `分析快照: ${evidenceTarget} · 追问保留首次证据`;
@@ -1742,7 +1825,8 @@ function announce(message) {
 // Built from text nodes only; the manifest carries paths and ranges, no contents.
 function renderEvidence(evidence) {
   const list = value => Array.isArray(value) ? value.filter(item => item && typeof item.path === 'string') : [];
-  const diffFiles = list(evidence.diff?.files), documents = list(evidence.documents), sources = list(evidence.sources);
+  const project = evidence.scope === 'project';
+  const diffFiles = project ? [] : list(evidence.diff?.files), documents = list(evidence.documents), sources = list(evidence.sources);
   const omitted = Math.max(0, Number(evidence.diff?.omitted) || 0);
   const cut = [...diffFiles, ...documents, ...sources].filter(item => item.truncated).length;
   const spans = ranges => Array.isArray(ranges) && ranges.length
@@ -1753,7 +1837,10 @@ function renderEvidence(evidence) {
   const scan = evidence.secretScan && typeof evidence.secretScan === 'object' ? evidence.secretScan : null;
   const redacted = Math.max(0, Number(scan?.redacted) || 0);
   const scanNote = !scan ? '' : scan.available === false ? ' · 未做密钥扫描' : redacted ? ` · ${redacted} 个疑似密钥已替换` : '';
-  summary.textContent = `本次依据：Diff ${diffFiles.length} 个文件${omitted ? `（另有 ${omitted} 个未展示）` : ''} · 文档 ${documents.length} 份 · 源码 ${sources.length} 个文件${cut ? ` · ${cut} 处截断` : ''}${scanNote}`;
+  const stats = evidence.stats && typeof evidence.stats === 'object' ? evidence.stats : {};
+  summary.textContent = project
+    ? `本次依据：整个项目 @ ${String(evidence.revision || '').slice(0, 8)} · 清单 ${Number(stats.files) || 0} 个文件 · 引用边 ${Number(stats.edges) || 0} 条 · 端点 ${Number(stats.endpoints) || 0} 个 · 文档 ${documents.length} 份 · 源码 ${sources.length} 个文件${cut ? ` · ${cut} 处截断` : ''}${scanNote}`
+    : `本次依据：Diff ${diffFiles.length} 个文件${omitted ? `（另有 ${omitted} 个未展示）` : ''} · 文档 ${documents.length} 份 · 源码 ${sources.length} 个文件${cut ? ` · ${cut} 处截断` : ''}${scanNote}`;
   details.appendChild(summary);
   const section = (title, items, describe) => {
     if (!items.length) return;
@@ -1769,7 +1856,14 @@ function renderEvidence(evidence) {
     details.appendChild(heading);
     details.appendChild(ul);
   };
-  section('Diff', diffFiles, item => `${item.path}${item.truncated ? '（已截断）' : ''}`);
+  if (project) {
+    const entryPoints = Array.isArray(evidence.entryPoints) ? evidence.entryPoints.filter(path => typeof path === 'string') : [];
+    const hubs = list(evidence.hubs);
+    section('入口', entryPoints.map(path => ({ path })), item => item.path);
+    section('核心模块', hubs, item => `${item.path} ← ${Number(item.count) || 0} 个模块`);
+  } else {
+    section('Diff', diffFiles, item => `${item.path}${item.truncated ? '（已截断）' : ''}`);
+  }
   section('文档', documents, item => `${item.path}${item.truncated ? `（第 ${spans(item.ranges)} 行，已截断）` : ''}`);
   section('源码', sources, item => `${item.path}${item.truncated ? `：第 ${spans(item.ranges)} 行` : '：全文'}`);
   if (scan) {
@@ -1856,6 +1950,15 @@ function clearMentorSession() {
 }
 
 // 复制整轮精读笔记为 Markdown
+// What the notes say they cover: the whole project or the selected revision.
+function scopeLabel() {
+  if (mentorRequestedTarget === 'project' || activeTarget === 'project') {
+    const revision = mentorResolvedTarget && mentorResolvedTarget !== 'project' ? ` @ ${String(mentorResolvedTarget).slice(0, 8)}` : '';
+    return `整个项目${revision}`;
+  }
+  return mentorResolvedTarget || activeTarget;
+}
+
 async function copyMentorNotes() {
   if (conversationHistory.length === 0) {
     alert('暂无精读笔记可复制');
@@ -1863,7 +1966,7 @@ async function copyMentorNotes() {
   }
 
   let fullMarkdown = `# 🧭 Tech Mentor 精读笔记: ${activeRepo ? activeRepo.name : ''}\n\n`;
-  fullMarkdown += `> 目标: ${mentorResolvedTarget || activeTarget} | 时间: ${new Date().toLocaleString()}\n\n`;
+  fullMarkdown += `> 目标: ${scopeLabel()} | 时间: ${new Date().toLocaleString()}\n\n`;
 
   conversationHistory.forEach((item, idx) => {
     if (item.role === 'user') {
@@ -1895,11 +1998,11 @@ function exportMentorMarkdown() {
   }
   const repoName = activeRepo ? activeRepo.name : 'repo';
   const safeRepoName = repoName.replace(/[^a-zA-Z0-9_\-\.]/g, '_').slice(0, 80) || 'repo';
-  const targetTag = (mentorResolvedTarget || activeTarget).replace(/[^a-zA-Z0-9_\-\.]/g, '_');
+  const targetTag = (mentorRequestedTarget === 'project' ? 'project' : mentorResolvedTarget || activeTarget).replace(/[^a-zA-Z0-9_\-\.]/g, '_');
   const fileName = `tech-mentor-${safeRepoName}-${targetTag}.md`;
 
   let fullMarkdown = `# 🧭 Tech Mentor 深度精读笔记: ${repoName}\n\n`;
-  fullMarkdown += `> **代码目标**: \`${mentorResolvedTarget || activeTarget}\` | **导出时间**: ${new Date().toLocaleString()} | **仓库路径**: \`${activeRepo?.path || ''}\`\n\n`;
+  fullMarkdown += `> **代码目标**: \`${scopeLabel()}\` | **导出时间**: ${new Date().toLocaleString()} | **仓库路径**: \`${activeRepo?.path || ''}\`\n\n`;
   fullMarkdown += `---\n\n`;
 
   conversationHistory.forEach((item, idx) => {

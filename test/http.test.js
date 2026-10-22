@@ -177,3 +177,23 @@ test('a directory picker that times out answers 504 instead of hanging', async t
   assert.equal(response.status, 504);
   assert.match((await response.json()).error, /目录选择超时/);
 });
+
+test('the diff route serves a whole-project overview instead of a diff', async t => {
+  const { root, write, commit } = gitFixture(t);
+  write('package.json', JSON.stringify({ name: 'demo', main: 'server.js', dependencies: { express: '1.0.0' } }, null, 2));
+  write('server.js', "import express from 'express';\napp.get('/api/health', (req, res) => res.end());\n");
+  commit('first');
+  const { request } = await appFixture(t, root);
+  const repos = await (await request('/api/repos')).json();
+  const response = await request(`/api/repos/${repos.repos[0].id}/diff?target=project`);
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.success, true);
+  assert.equal(body.target, 'project');
+  assert.equal(body.resolvedTarget.length, 40);
+  assert.ok(body.project.stats.files >= 2);
+  assert.match(body.project.tree, /server\.js/);
+  assert.match(body.project.endpoints, /GET \/api\/health/);
+  assert.deepEqual(body.project.deps, { express: '1.0.0' });
+  assert.ok(Array.isArray(body.project.entryPoints) && body.project.entryPoints.includes('server.js'));
+});

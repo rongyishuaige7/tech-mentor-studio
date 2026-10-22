@@ -1,5 +1,6 @@
 import { getStatus, getCommits, getPresets, loadDiff, getRepoSummary } from './lib/git.js';
 import { hasProjectFacts } from './lib/facts.js';
+import { buildProjectOverview, renderProjectTree, renderImports, renderEndpoints } from './lib/project.js';
 import { mentorHandler } from './lib/mentor.js';
 import { localAccess, RepositoryRegistry, httpError, redactKnownSecret } from './lib/security.js';
 import express from 'express';
@@ -208,8 +209,27 @@ app.get('/api/repos/:repoId/diff', async (req, res) => {
   try {
     const repoPath = registry.resolve(req.params.repoId);
     const options = { signal: lifecycle.signal };
+    const target = req.query.target || 'working-tree';
+    // Whole-project scope has no diff: the page shows the inventory the mentor reads.
+    if (target === 'project') {
+      const overview = await buildProjectOverview(repoPath, options);
+      return res.json(redactKnownSecret({
+        success: true, target: 'project', resolvedTarget: overview.revision, branch: overview.branch,
+        project: {
+          stats: overview.stats,
+          entryPoints: overview.entryPoints,
+          hubs: overview.graph.hubs,
+          deps: overview.deps,
+          documents: overview.documents.map(file => file.path),
+          tree: renderProjectTree(overview.files, { limit: 6000 }),
+          endpoints: renderEndpoints(overview.endpoints),
+          imports: renderImports(overview.graph, { limit: 4000 })
+        },
+        hasFacts: overview.documents.length > 0
+      }, config.proxyKey));
+    }
     // diffText repeats files[].patch; the page only needs the files.
-    const { diffText, ...data } = await loadDiff(repoPath, req.query.target || 'working-tree', options);
+    const { diffText, ...data } = await loadDiff(repoPath, target, options);
     res.json(redactKnownSecret({ ...data, repoPath, hasFacts: await hasProjectFacts(repoPath, data, options) }, config.proxyKey));
   } catch (error) { sendFailure(res, error, lifecycle); }
   finally { lifecycle.dispose(); }
