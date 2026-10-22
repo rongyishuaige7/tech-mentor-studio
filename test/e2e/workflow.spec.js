@@ -293,3 +293,62 @@ test('stopping a pending analysis terminates loading without retaining an answer
   release();
   expect(await page.evaluate(() => conversationHistory.length)).toBe(0);
 });
+
+test('the splitter resizes both panels, remembers the width and resets on double-click', async ({ page }) => {
+  await fixture(page);
+  await page.route('**/api/mentor/analyze', route => route.fulfill({ contentType: 'text/event-stream', body: stream('回答') }));
+  await page.goto('/');
+  const width = () => page.evaluate(() => Math.round(document.getElementById('diff-panel').getBoundingClientRect().width));
+  const splitter = page.locator('#panel-splitter');
+  await expect(splitter).toBeVisible();
+  expect(await width()).toBe(390);
+
+  const box = await splitter.boundingBox();
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width / 2 + 90, box.y + box.height / 2, { steps: 6 });
+  await page.mouse.up();
+  const dragged = await width();
+  expect(dragged - 390).toBeGreaterThan(60);
+  await expect(page.locator('body')).not.toHaveClass(/resizing/);
+
+  // Keyboard nudges by 16 px and keeps focus.
+  await splitter.focus();
+  await page.keyboard.press('ArrowLeft');
+  const nudged = await width();
+  expect(nudged).toBe(dragged - 16);
+  await expect(splitter).toHaveAttribute('aria-valuenow', String(nudged));
+
+  // The width survives a reload.
+  await page.reload();
+  await expect.poll(width).toBe(nudged);
+
+  // Double-click restores the responsive default for this viewport.
+  await page.locator('#panel-splitter').dblclick();
+  await expect.poll(width).toBe(390);
+});
+
+test('the splitter stops at its limits and hides in the single-panel layout', async ({ page }) => {
+  await fixture(page);
+  await page.goto('/');
+  const width = () => page.evaluate(() => Math.round(document.getElementById('diff-panel').getBoundingClientRect().width));
+  const splitter = page.locator('#panel-splitter');
+  const box = await splitter.boundingBox();
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + 2000, box.y + box.height / 2, { steps: 4 });
+  await page.mouse.up();
+  // 1280 viewport - 230 repos - 7 splitter - 420 mentor = 623
+  expect(await width()).toBe(623);
+
+  await splitter.focus();
+  await page.keyboard.press('Home');
+  expect(await width()).toBe(320);
+
+  await page.setViewportSize({ width: 900, height: 800 });
+  await expect(splitter).toBeHidden();
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await expect(splitter).toBeVisible();
+  // The stored preference is re-clamped, not overwritten: 320 is still the width.
+  expect(await width()).toBe(320);
+});

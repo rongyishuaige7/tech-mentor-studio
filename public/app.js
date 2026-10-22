@@ -285,6 +285,99 @@ function toggleTheme() {
   applyTheme(currentIsDark ? 'light' : 'dark');
 }
 
+// 中栏与导师栏之间的分隔条。宽度写进 --diff-panel-width；没拖过时不写，
+// 让媒体查询决定默认值，窄屏切到单栏 Tab 模式时分隔条隐藏。
+const SPLITTER_KEY = 'mentor-diff-width';
+const DIFF_MIN_WIDTH = 320, MENTOR_MIN_WIDTH = 420;
+
+function clampDiffWidth(value, workspaceWidth, reposWidth) {
+  const max = Math.max(DIFF_MIN_WIDTH, workspaceWidth - reposWidth - MENTOR_MIN_WIDTH);
+  return Math.min(Math.max(DIFF_MIN_WIDTH, Math.round(value)), max);
+}
+
+function initPanelSplitter() {
+  const splitter = document.getElementById('panel-splitter');
+  const workspace = document.getElementById('workspace');
+  const diffPanel = document.getElementById('diff-panel');
+  if (!splitter || !workspace || !diffPanel) return;
+
+  const reposWidth = () => document.getElementById('repos-panel')?.getBoundingClientRect().width || 0;
+  const renderedWidth = () => diffPanel.getBoundingClientRect().width;
+  // The splitter itself takes layout space; the mentor panel needs the rest.
+  const available = () => workspace.clientWidth - splitter.getBoundingClientRect().width;
+  const maxWidth = () => Math.max(DIFF_MIN_WIDTH, available() - reposWidth() - MENTOR_MIN_WIDTH);
+  const apply = width => document.documentElement.style.setProperty('--diff-panel-width', `${width}px`);
+  const syncAria = () => {
+    splitter.setAttribute('aria-valuenow', String(Math.round(renderedWidth())));
+    splitter.setAttribute('aria-valuemax', String(Math.round(maxWidth())));
+  };
+
+  // The width the user asked for; null means "follow the media query".
+  let desired = null;
+  try {
+    const stored = Number(localStorage.getItem(SPLITTER_KEY));
+    if (Number.isFinite(stored) && stored > 0) desired = stored;
+  } catch {}
+
+  const render = () => {
+    if (desired === null) document.documentElement.style.removeProperty('--diff-panel-width');
+    else apply(clampDiffWidth(desired, available(), reposWidth()));
+    syncAria();
+  };
+  const persist = () => {
+    try {
+      if (desired === null) localStorage.removeItem(SPLITTER_KEY);
+      else localStorage.setItem(SPLITTER_KEY, String(Math.round(desired)));
+    } catch {}
+  };
+  // Store what the user can actually see: a drag past the limit keeps the limit,
+  // while a window resize re-clamps at render time without overwriting it.
+  const setDesired = width => { desired = clampDiffWidth(width, available(), reposWidth()); render(); };
+
+  let drag = null;
+  splitter.addEventListener('pointerdown', event => {
+    if (event.button !== 0) return;
+    drag = { pointerId: event.pointerId, startX: event.clientX, startWidth: renderedWidth() };
+    splitter.setPointerCapture(event.pointerId);
+    document.body.classList.add('resizing');
+    event.preventDefault();
+  });
+  splitter.addEventListener('pointermove', event => {
+    if (!drag || event.pointerId !== drag.pointerId) return;
+    setDesired(drag.startWidth + (event.clientX - drag.startX));
+  });
+  const endDrag = event => {
+    if (!drag || (event?.pointerId !== undefined && event.pointerId !== drag.pointerId)) return;
+    drag = null;
+    document.body.classList.remove('resizing');
+    persist();
+    syncAria();
+  };
+  splitter.addEventListener('pointerup', endDrag);
+  splitter.addEventListener('pointercancel', endDrag);
+
+  // Double-click goes back to the responsive default.
+  splitter.addEventListener('dblclick', () => { desired = null; render(); persist(); });
+  splitter.addEventListener('keydown', event => {
+    const step = event.shiftKey ? 64 : 16;
+    const current = renderedWidth();
+    let next = null;
+    if (event.key === 'ArrowLeft') next = current - step;
+    else if (event.key === 'ArrowRight') next = current + step;
+    else if (event.key === 'Home') next = DIFF_MIN_WIDTH;
+    else if (event.key === 'End') next = maxWidth();
+    if (next === null) return;
+    event.preventDefault();
+    setDesired(next);
+    persist();
+  });
+
+  // Re-clamp against the new viewport instead of overwriting the preference, so
+  // widening the window again restores the width the user chose.
+  window.addEventListener('resize', render);
+  render();
+}
+
 const mermaidTheme = () => document.documentElement.classList.contains('dark') ? 'dark' : 'neutral';
 
 // Mermaid is about 3.4 MB; load it the first time an answer contains a diagram.
@@ -389,6 +482,7 @@ async function redrawMermaid(root = document) {
 
 document.addEventListener('DOMContentLoaded', () => {
   initTheme();
+  initPanelSplitter();
   marked.setOptions({ gfm: true, breaks: true });
 
   lucide.createIcons();

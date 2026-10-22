@@ -388,6 +388,16 @@ button:focus-visible, [role="button"]:focus-visible, select:focus-visible, summa
 /* 提交列表没有内边距，焦点环画在行内，避免被滚动容器裁掉 */
 #commit-list [role="button"]:focus-visible { outline-offset: -2px; }
 #panel-tabs { display: none; }
+/* 中栏宽度由分隔条拖拽决定；默认值随视口变化，用户拖过之后才写内联变量 */
+:root { --diff-panel-width: 480px; }
+#diff-panel { width: var(--diff-panel-width); }
+#panel-splitter { flex: 0 0 7px; cursor: col-resize; touch-action: none; position: relative;
+  border-left: 1px solid var(--border-app); background: transparent; }
+#panel-splitter:hover, #panel-splitter:focus-visible, body.resizing #panel-splitter {
+  border-left: 2px solid var(--accent-terracotta); background: var(--accent-terracotta-bg); }
+#panel-splitter:focus-visible { outline: 2px solid var(--text-primary); outline-offset: -3px; }
+body.resizing { cursor: col-resize; user-select: none; }
+body.resizing * { cursor: col-resize !important; }
 #workspace, #mentor-panel, #mentor-input { min-width: 0; min-height: 0; }
 #model-select { max-width: 230px; }
 #model-status { max-width: 180px; }
@@ -401,7 +411,7 @@ button:focus-visible, [role="button"]:focus-visible, select:focus-visible, summa
 
 @media (min-width: 1101px) and (max-width: 1450px) {
   #repos-panel { width: 230px; }
-  #diff-panel { width: 390px; }
+  :root { --diff-panel-width: 390px; }
   #facts-badge { display: none; }
   #model-status { max-width: 120px; }
 }
@@ -428,6 +438,7 @@ button:focus-visible, [role="button"]:focus-visible, select:focus-visible, summa
   #panel-tabs button { flex: 1; padding: 6px; border-radius: 5px; font-size: 12px; color: var(--text-muted); }
   #panel-tabs button[aria-pressed="true"] { background: var(--btn-action-bg); color: var(--accent-terracotta); border: 1px solid var(--accent-terracotta); }
   #workspace > aside, #workspace > section { display: none; width: 100%; flex: 1; border-right: 0; min-width: 0; }
+  #panel-splitter { display: none; }
   #workspace[data-panel="repos"] #repos-panel,
   #workspace[data-panel="diff"] #diff-panel,
   #workspace[data-panel="mentor"] #mentor-panel { display: flex; }

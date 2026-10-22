@@ -35,3 +35,12 @@ test('Mermaid repair is idempotent', () => {
   assert.match(once, /B\["getUser\(\)"\]/);
   assert.match(once, /\|"写入 \(慢\)"\|/);
 });
+
+test('the panel splitter clamps the diff width and leaves room for the mentor panel', () => {
+  const clamp = context.clampDiffWidth;
+  assert.equal(clamp(100, 1440, 230), 320);
+  assert.equal(clamp(600, 1440, 230), 600);
+  assert.equal(clamp(5000, 1440, 230), 1440 - 230 - 420);
+  assert.equal(clamp(900, 800, 230), 320);
+  assert.equal(clamp(500.6, 1440, 230), 501);
+});

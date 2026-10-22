@@ -123,7 +123,7 @@
     </aside>
 
     <!-- 栏 2：提交时间线与 Diff 查看器 (中栏 480px) -->
-    <section id="diff-panel" class="w-[480px] border-r border-[var(--border-app)] bg-[var(--bg-panel-diff)] flex flex-col shrink-0 transition-colors">
+    <section id="diff-panel" class="bg-[var(--bg-panel-diff)] flex flex-col shrink-0 transition-colors">
       
       <!-- 项目信息条 -->
       <div class="p-3 border-b border-[var(--border-app)] bg-[var(--bg-header)] flex items-center justify-between">
@@ -176,6 +176,10 @@
         <div id="diff-content" class="text-[var(--text-primary)] whitespace-pre-wrap leading-relaxed"><span class="text-[var(--text-subtle)]">// 差异查看器就绪</span></div>
       </div>
     </section>
+
+    <!-- 中栏与导师栏之间的拖拽分隔条：宽度写入 --diff-panel-width -->
+    <div id="panel-splitter" role="separator" aria-orientation="vertical" aria-label="调整代码差异与导师栏宽度"
+         aria-valuemin="320" tabindex="0" title="拖动调整宽度，双击复位；聚焦后用 ←/→ 微调"></div>
 
     <!-- 栏 3：Tech Mentor 深度导师对话看板 (右栏 自适应) -->
     <section id="mentor-panel" class="flex-1 bg-[var(--bg-panel-mentor)] flex flex-col overflow-hidden transition-colors">
