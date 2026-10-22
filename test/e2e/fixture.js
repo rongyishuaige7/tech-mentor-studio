@@ -10,6 +10,14 @@ export async function fixture(page, options = {}) {
   await page.route('**/api/repos/fixture/diff?*', route => route.fulfill({ json: { success: true,
     files: [{ path: name, patch, additions: 1, deletions: 1 }], hasFacts: false
   } }));
+  await page.route(/\/api\/repos\/[^/]+\/tree$/, route => route.fulfill({ json: { success: true, omitted: 0, files: [
+    { path: 'src/app.js', size: 120, tracked: true },
+    { path: 'src/lib/util.js', size: 80, tracked: true }
+  ] } }));
+  await page.route(/\/api\/repos\/[^/]+\/file\?.*/, route => {
+    const path = new URL(route.request().url()).searchParams.get('path');
+    return route.fulfill({ json: { success: true, path, text: 'const value = 1;\nexport default value;\n', lines: 2, bytes: 43 } });
+  });
   await page.route('**/api/models', route => route.fulfill({ json: { success: true, models: [{ id: 'test-model', name: 'Test Model' }] } }));
   await page.route('**/api/tokens/keeper-stats', route => route.fulfill({ json: { success: false } }));
 }

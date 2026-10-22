@@ -11,7 +11,12 @@ export function loadClient(fetcher) {
       dataset: {}, classList: {
         values: new Set(['hidden']),
         add(x) { this.values.add(x); }, remove(x) { this.values.delete(x); },
-        contains(x) { return this.values.has(x); }
+        contains(x) { return this.values.has(x); },
+        toggle(x, force) {
+          const on = force === undefined ? !this.values.has(x) : Boolean(force);
+          if (on) this.values.add(x); else this.values.delete(x);
+          return on;
+        }
       },
       appendChild(child) { this.children.push(child); },
       insertAdjacentHTML(position, html) { this.innerHTML += html; },

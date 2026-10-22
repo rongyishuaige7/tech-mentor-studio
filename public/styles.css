@@ -356,6 +356,30 @@ body {
 /* Mermaid 图跟随主题背景；图本身在切换主题时按源码重绘 */
 .mermaid-box { background: var(--code-block-bg); border: 1px solid var(--code-block-border); }
 
+/* 中栏视图切换：文件 / 变更 */
+.view-tab { padding: 3px 10px; border-radius: 6px; font-size: 11px; color: var(--text-muted);
+  border: 1px solid transparent; background: transparent; transition: color .15s, background .15s, border-color .15s; }
+.view-tab:hover { color: var(--text-primary); background: var(--btn-action-hover); }
+.view-tab[aria-selected="true"] { color: var(--accent-terracotta); border-color: var(--accent-terracotta); background: var(--accent-terracotta-bg); font-weight: 600; }
+
+/* 文件树 */
+.tree-row { display: flex; align-items: center; gap: 4px; padding: 2px 6px; border-radius: 4px; cursor: pointer;
+  color: var(--text-secondary); white-space: nowrap; overflow: hidden; }
+.tree-row:hover { background: var(--bg-surface-hover); color: var(--text-primary); }
+.tree-row[aria-selected="true"] { background: var(--accent-terracotta-bg); color: var(--text-primary); font-weight: 600; }
+.tree-row:focus-visible { outline: 2px solid var(--text-primary); outline-offset: -2px; }
+.tree-caret { flex: none; width: 10px; text-align: center; color: var(--text-subtle); font-size: 9px; }
+.tree-name { overflow: hidden; text-overflow: ellipsis; }
+.tree-size { margin-left: auto; padding-left: 8px; color: var(--text-subtle); font-size: 10px; flex: none; }
+.tree-dot { flex: none; width: 5px; height: 5px; border-radius: 999px; background: var(--accent-terracotta); }
+
+/* 文件查看器：行号与代码行，选中后可直接提问 */
+.file-line { display: flex; gap: 10px; padding: 0 10px; }
+.file-line:hover { background: var(--bg-surface-hover); }
+.file-num { flex: none; width: 44px; text-align: right; color: var(--text-subtle); user-select: none; }
+.file-text { white-space: pre; min-width: 0; }
+.file-line.is-target { background: var(--diff-hunk-bg); }
+
 /* 整个项目概览：中栏是 diff 的 pre-wrap 容器，概览需要按正常换行排版 */
 .project-overview { white-space: normal; }
 
@@ -389,7 +413,7 @@ button:focus-visible, [role="button"]:focus-visible, select:focus-visible, summa
 #commit-list [role="button"]:focus-visible { outline-offset: -2px; }
 #panel-tabs { display: none; }
 /* 中栏宽度由分隔条拖拽决定；默认值随视口变化，用户拖过之后才写内联变量 */
-:root { --diff-panel-width: 480px; }
+:root { --diff-panel-width: 560px; }
 #diff-panel { width: var(--diff-panel-width); }
 #panel-splitter { flex: 0 0 7px; cursor: col-resize; touch-action: none; position: relative;
   border-left: 1px solid var(--border-app); background: transparent; }
@@ -411,7 +435,7 @@ body.resizing * { cursor: col-resize !important; }
 
 @media (min-width: 1101px) and (max-width: 1450px) {
   #repos-panel { width: 230px; }
-  :root { --diff-panel-width: 390px; }
+  :root { --diff-panel-width: 440px; }
   #facts-badge { display: none; }
   #model-status { max-width: 120px; }
 }

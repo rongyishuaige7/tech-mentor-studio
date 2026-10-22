@@ -33,7 +33,8 @@ test('narrow layout supports snapshot follow-ups, clipboard and Markdown export'
   expect(await page.evaluate(() => document.body.scrollWidth <= innerWidth)).toBe(true);
   await page.locator('[data-action="panel"][data-value="repos"]').click();
   await expect(page.locator('#repos-panel')).toBeVisible();
-  await page.locator('[data-action="repo"]').click();
+  await expect(page.locator('#repo-select')).toBeVisible();
+  await page.locator('[data-action="panel"][data-value="diff"]').click();
   await expect(page.locator('#diff-panel')).toBeVisible();
   await page.locator('[data-action="panel"][data-value="mentor"]').click();
   await page.locator('#btn-walkthrough').click();
@@ -52,7 +53,9 @@ test('narrow layout supports snapshot follow-ups, clipboard and Markdown export'
   const downloadPromise = page.waitForEvent('download'); await page.locator('#btn-export-mentor').click();
   const download = await downloadPromise;
   expect(fs.readFileSync(await download.path(), 'utf8')).toContain('const result = 42;');
-  await page.locator('[data-action="panel"][data-value="diff"]').click(); await page.locator('[data-action="focus"]').click();
+  await page.locator('[data-action="panel"][data-value="diff"]').click();
+  await page.locator('#tab-diff').click();
+  await page.locator('[data-action="focus"]').click();
   expect(await page.evaluate(() => mentorSnapshotId)).toBe('browser-snapshot');
   expect(await page.evaluate(() => conversationHistory.length)).toBe(3);
   await page.locator('[data-action="panel"][data-value="mentor"]').click();
@@ -106,6 +109,7 @@ test('the whole-project scope shows the inventory and a walkthrough reads it', a
     return route.fulfill({ contentType: 'text/event-stream', body: stream('回答') });
   });
   await page.goto('/');
+  await page.locator('#tab-diff').click();
   await page.locator('#commit-list [data-value="project"]').click();
   await expect(page.locator('#diff-target-label')).toHaveText('整个项目 (Project)');
   await expect(page.locator('#diff-content')).toContainText('引用边');
@@ -131,7 +135,7 @@ test('the first answer lists the evidence the model received', async ({ page }) 
   await expect(details.locator('li')).toHaveText(['src/app.js', 'README.md', 'src/app.js：第 1-40, 90-120 行']);
 });
 
-test('repository and commit rows work from the keyboard and keep focus when re-rendered', async ({ page }) => {
+test('repository switching and commit rows work from the keyboard', async ({ page }) => {
   await fixture(page);
   await page.route(/\/api\/repos(?:\?.*)?$/, route => route.fulfill({ json: { success: true, repos: [
     { id: 'fixture', name: 'Fixture', path: '/fixture', branch: 'main', dirtyCount: 0 },
@@ -146,18 +150,14 @@ test('repository and commit rows work from the keyboard and keep focus when re-r
   page.on('request', request => { const url = new URL(request.url()); if (url.pathname === '/api/repos/second/diff') diffTargets.push(url.searchParams.get('target')); });
   await page.goto('/');
   await expect(page.locator('#active-repo-name')).toHaveText('Fixture');
-  const repoRow = id => page.locator(`#repo-list [data-action="repo"][data-value="${id}"]`);
-  await page.locator('#repo-search').focus();
-  await page.keyboard.press('Tab');
-  await expect(repoRow('fixture')).toBeFocused();
-  expect(await repoRow('fixture').evaluate(row => getComputedStyle(row).outlineStyle)).toBe('solid');
-  await page.keyboard.press('Tab');
-  await expect(repoRow('second')).toBeFocused();
-  await page.keyboard.press('Enter');
+
+  // The repository picker is a native select, so it is keyboard operable by default.
+  await page.locator('#repo-select').focus();
+  await expect(page.locator('#repo-select')).toBeFocused();
+  await page.locator('#repo-select').selectOption('second');
   await expect(page.locator('#active-repo-name')).toHaveText('Second');
-  await expect(repoRow('second')).toHaveAttribute('aria-current', 'true');
-  await expect(repoRow('fixture')).toHaveAttribute('aria-current', 'false');
-  await expect(repoRow('second')).toBeFocused();
+
+  await page.locator('#tab-diff').click();
   const commitRow = hash => page.locator(`#commit-list [data-value="${hash}"]`);
   await expect(commitRow('b'.repeat(40))).toHaveAttribute('aria-current', 'true');
   await commitRow('c'.repeat(40)).focus();
@@ -272,6 +272,7 @@ test('large Diff pages retain correct line numbers and full copy', async ({ page
   const patch = 'diff --git a/code.js b/code.js\nnew file mode 100644\n--- /dev/null\n+++ b/code.js\n@@ -0,0 +1,4500 @@\n'
     + Array.from({ length: 4500 }, (_, i) => `+line-${i + 1}`).join('\n') + '\n';
   await fixture(page, { patch }); await page.goto('/');
+  await page.locator('#tab-diff').click();
   await expect(page.locator('#diff-content .diff-line')).toHaveCount(2000);
   await page.locator('[data-action="diff-page"]').filter({ hasText: '下一页' }).click();
   await expect(page.locator('#diff-content .diff-num').first()).toHaveText('1996');
@@ -301,7 +302,7 @@ test('the splitter resizes both panels, remembers the width and resets on double
   const width = () => page.evaluate(() => Math.round(document.getElementById('diff-panel').getBoundingClientRect().width));
   const splitter = page.locator('#panel-splitter');
   await expect(splitter).toBeVisible();
-  expect(await width()).toBe(390);
+  expect(await width()).toBe(440);
 
   const box = await splitter.boundingBox();
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
@@ -309,7 +310,7 @@ test('the splitter resizes both panels, remembers the width and resets on double
   await page.mouse.move(box.x + box.width / 2 + 90, box.y + box.height / 2, { steps: 6 });
   await page.mouse.up();
   const dragged = await width();
-  expect(dragged - 390).toBeGreaterThan(60);
+  expect(dragged - 440).toBeGreaterThan(60);
   await expect(page.locator('body')).not.toHaveClass(/resizing/);
 
   // Keyboard nudges by 16 px and keeps focus.
@@ -325,7 +326,7 @@ test('the splitter resizes both panels, remembers the width and resets on double
 
   // Double-click restores the responsive default for this viewport.
   await page.locator('#panel-splitter').dblclick();
-  await expect.poll(width).toBe(390);
+  await expect.poll(width).toBe(440);
 });
 
 test('the splitter stops at its limits and hides in the single-panel layout', async ({ page }) => {
@@ -351,4 +352,67 @@ test('the splitter stops at its limits and hides in the single-panel layout', as
   await expect(splitter).toBeVisible();
   // The stored preference is re-clamped, not overwritten: 320 is still the width.
   expect(await width()).toBe(320);
+});
+
+test('the file tree opens a file with line numbers, filters, and keeps it across view switches', async ({ page }) => {
+  await fixture(page);
+  await page.goto('/');
+  const dir = page.locator('#file-tree .tree-row[data-kind="dir"]').first();
+  await expect(dir).toContainText('src');
+  await dir.click();
+  await page.locator('#file-tree .tree-row[data-path="src/app.js"]').click();
+  await expect(page.locator('#file-path-label')).toHaveText('src/app.js');
+  await expect(page.locator('#file-content .file-line')).toHaveCount(2);
+  await expect(page.locator('#file-content .file-num').first()).toHaveText('1');
+  await expect(page.locator('#file-content .file-text').first()).toContainText('const value = 1;');
+  await expect(page.locator('#file-stat-badge')).toContainText('2 行');
+
+  // Filtering turns the tree into a flat result list.
+  await page.locator('#file-filter').fill('util');
+  await expect(page.locator('#file-tree .tree-row')).toHaveCount(1);
+  await expect(page.locator('#file-tree .tree-row')).toContainText('util.js');
+  await page.locator('#file-filter').fill('');
+
+  await page.locator('#tab-diff').click();
+  await expect(page.locator('#diff-view')).toBeVisible();
+  await expect(page.locator('#file-view')).toBeHidden();
+  await page.locator('#tab-file').click();
+  await expect(page.locator('#file-content .file-line')).toHaveCount(2);
+});
+
+test('a question about the open file is scoped to that file', async ({ page }) => {
+  await fixture(page);
+  const payloads = [];
+  await page.route('**/api/mentor/analyze', route => {
+    payloads.push(route.request().postDataJSON());
+    return route.fulfill({ contentType: 'text/event-stream', body: stream('回答') });
+  });
+  await page.goto('/');
+  await page.locator('#file-tree .tree-row[data-kind="dir"]').first().click();
+  await page.locator('#file-tree .tree-row[data-path="src/app.js"]').click();
+  await expect(page.locator('#file-path-label')).toHaveText('src/app.js');
+  await page.locator('#btn-anatomy').click();
+  await expect.poll(() => payloads.length).toBeGreaterThan(0);
+  expect(payloads[0].target).toBe('file');
+  expect(payloads[0].focusFile).toBe('src/app.js');
+});
+
+test('selecting lines in the file viewer becomes a question quoting the file and lines', async ({ page }) => {
+  await fixture(page);
+  await page.route('**/api/mentor/analyze', route => route.fulfill({ contentType: 'text/event-stream', body: stream('回答') }));
+  await page.goto('/');
+  await page.locator('#file-tree .tree-row[data-kind="dir"]').first().click();
+  await page.locator('#file-tree .tree-row[data-path="src/app.js"]').click();
+  await expect(page.locator('#file-content .file-line')).toHaveCount(2);
+  await page.evaluate(() => {
+    const rows = document.querySelectorAll('#file-content .file-line');
+    const range = document.createRange();
+    range.setStart(rows[0].querySelector('.file-text'), 0);
+    range.setEnd(rows[1].querySelector('.file-text'), 1);
+    getSelection().removeAllRanges();
+    getSelection().addRange(range);
+  });
+  await expect(page.locator('#btn-ask-selection')).toBeVisible();
+  await page.locator('#btn-ask-selection').click();
+  await expect(page.locator('#mentor-input')).toHaveValue(/^关于 src\/app\.js:1-2：\n```javascript\nconst value = 1;/);
 });

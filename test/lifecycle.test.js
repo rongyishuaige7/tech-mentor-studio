@@ -111,7 +111,7 @@ test('diff renderer treats plus/minus prefixes inside hunks as code and numbers 
 
 test('follow-up payload keeps the requested target instead of the resolved revision', async () => {
   const bodies = [];
-  const { context } = loadClient((url, options) => {
+  const { context, run } = loadClient((url, options) => {
     if (url === '/api/mentor/analyze') {
       bodies.push(JSON.parse(options.body));
       return Promise.resolve(eventResponse([
@@ -121,7 +121,8 @@ test('follow-up payload keeps the requested target instead of the resolved revis
     }
     return keeperResponse();
   });
-  await context.startMentorAnalysis('walkthrough', '', true);
+  run("currentView = 'diff'");
+  await context.startMentorAnalysis('anatomy', '', true);
   await context.startMentorAnalysis('custom', 'why', false);
   assert.equal(bodies[0].target, 'HEAD');
   assert.equal(bodies[1].target, 'HEAD');
@@ -131,7 +132,7 @@ test('follow-up payload keeps the requested target instead of the resolved revis
 
 test('viewing another file keeps the conversation and its scope; switching target parks it', async () => {
   const bodies = [];
-  const { context, get, nodes } = loadClient((url, options) => {
+  const { context, get, nodes, run } = loadClient((url, options) => {
     if (url === '/api/mentor/analyze') {
       bodies.push(JSON.parse(options.body));
       return Promise.resolve(eventResponse([
@@ -142,7 +143,8 @@ test('viewing another file keeps the conversation and its scope; switching targe
     if (url.includes('/diff')) return Promise.resolve({ json: async () => ({ success: true, files: [] }) });
     return keeperResponse();
   });
-  await context.startMentorAnalysis('walkthrough', '', true);
+  run("currentView = 'diff'");
+  await context.startMentorAnalysis('anatomy', '', true);
   context.setFocusFile('src/file.js');
   assert.equal(get('conversationHistory.length'), 1);
   assert.equal(get('mentorSnapshotId'), 'snap');
@@ -173,10 +175,10 @@ test('returning to a repository restores its target, viewed file and that target
     return keeperResponse();
   });
   run("activeRepo = { id: 'A', name: 'A', path: '/repo/A' };"
-    + "lastRepoView.set('B', { target: 'C1', viewFile: 'file.js' });"
+    + "lastRepoView.set('B', { target: 'C1', viewFile: 'file.js', view: 'diff' });"
     + "mentorSessions.set(sessionKey('B', 'C1'), { conversationHistory: [{ role: 'assistant', content: 'saved' }],"
     + " mentorSnapshotId: 'snap', mentorResolvedTarget: 'C1', mentorRequestedTarget: 'C1',"
-    + " scopeFile: 'file.js', chatHtml: '<div>saved</div>' })");
+    + " scopeKey: 'C1', scopeFile: 'file.js', chatHtml: '<div>saved</div>' })");
   await context.selectRepo({ id: 'B', name: 'B', path: '/repo/B' });
   await new Promise(resolve => setImmediate(resolve));
   await new Promise(resolve => setImmediate(resolve));
@@ -226,10 +228,10 @@ test('a conversation about a file that disappeared ends with a visible notice', 
     return keeperResponse();
   });
   run("activeRepo = { id: 'A', name: 'A', path: '/repo/A' };"
-    + "lastRepoView.set('B', { target: 'C1', viewFile: 'gone.js' });"
+    + "lastRepoView.set('B', { target: 'C1', viewFile: 'gone.js', view: 'diff' });"
     + "mentorSessions.set(sessionKey('B', 'C1'), { conversationHistory: [{ role: 'assistant', content: 'saved' }],"
     + " mentorSnapshotId: 'snap', mentorResolvedTarget: 'C1', mentorRequestedTarget: 'C1',"
-    + " scopeFile: 'gone.js', chatHtml: '<div>saved</div>' })");
+    + " scopeKey: 'C1', scopeFile: 'gone.js', chatHtml: '<div>saved</div>' })");
   await context.selectRepo({ id: 'B', name: 'B', path: '/repo/B' });
   await new Promise(resolve => setImmediate(resolve));
   await new Promise(resolve => setImmediate(resolve));
@@ -279,7 +281,7 @@ test('action turns record the instruction the server sent', async () => {
 
 test('long conversations send only whole recent rounds within the server budget', async () => {
   const { context, get, run, nodes, bodies } = analyzeClient(() => answer('snap', 'next'));
-  run("mentorSnapshotId = 'snap'; mentorRequestedTarget = 'HEAD'; conversationHistory = [];"
+  run("currentView = 'diff'; mentorScopeKey = 'HEAD'; mentorSnapshotId = 'snap'; mentorRequestedTarget = 'HEAD'; conversationHistory = [];"
     + "for (let i = 0; i < 4; i++) conversationHistory.push({ role: 'user', content: 'q' + i }, { role: 'assistant', content: 'x'.repeat(10000) });");
   await context.startMentorAnalysis('custom', 'next', false);
   const sent = bodies[0].history;
@@ -314,26 +316,27 @@ test('a session token rejected after a service restart is refreshed once', async
   assert.equal(client.get('modelsReady'), true);
 });
 
-test('a fresh analysis takes the viewed file as scope, and clearing it can be undone', async () => {
-  const { context, get, nodes, bodies } = analyzeClient(call => answer(`snap-${call}`, `q${call}`));
-  context.setFocusFile('src/a.js');
-  await context.startMentorAnalysis('walkthrough', '', false);
+test('a fresh analysis takes the open file as scope, and clearing it can be undone', async () => {
+  const { context, get, nodes, bodies, run } = analyzeClient(call => answer(`snap-${call}`, `q${call}`));
+  run("currentFilePath = 'src/a.js'");
+  await context.startMentorAnalysis('anatomy', '', false);
+  assert.equal(bodies[0].target, 'file');
   assert.equal(bodies[0].focusFile, 'src/a.js');
   assert.equal(nodes.get('mentor-scope-text').textContent, '讨论范围：a.js');
 
   context.clearCurrentMentorSession();
   assert.equal(get('conversationHistory.length'), 0);
-  assert.equal(get("mentorSessions.has(sessionKey('B', 'HEAD'))"), false);
+  assert.equal(get("mentorSessions.has(sessionKey('B', 'file:src/a.js'))"), false);
   assert.equal(nodes.get('btn-undo-clear').classList.contains('hidden'), false);
   context.undoClearMentorSession();
   assert.equal(get('conversationHistory.length'), 2);
   assert.equal(get('mentorSnapshotId'), 'snap-1');
   assert.equal(get('mentorScope.file'), 'src/a.js');
-  assert.equal(get("mentorSessions.has(sessionKey('B', 'HEAD'))"), true);
+  assert.equal(get("mentorSessions.has(sessionKey('B', 'file:src/a.js'))"), true);
 
   // An undo offered before a newer conversation started never replaces it.
   context.clearCurrentMentorSession();
-  await context.startMentorAnalysis('walkthrough', '', false);
+  await context.startMentorAnalysis('anatomy', '', false);
   context.undoClearMentorSession();
   assert.equal(get('mentorSnapshotId'), 'snap-2');
 });

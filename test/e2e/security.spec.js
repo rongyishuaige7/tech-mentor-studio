@@ -14,6 +14,7 @@ test('local resources, literal filenames and sanitized model output work under C
     [{ type: 'chunk', text }, { type: 'done' }, { type: 'finished' }].map(event => `data: ${JSON.stringify(event)}\n\n`).join('')
   }));
   await page.goto('/');
+  await page.locator('#tab-diff').click();
   await expect(page.locator('[data-action="focus"]')).toHaveCount(1);
   await page.locator('[data-action="focus"]').click();
   expect(await page.evaluate(() => window.__auditExecuted)).toBeUndefined();

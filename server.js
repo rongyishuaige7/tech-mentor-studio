@@ -1,6 +1,7 @@
 import { getStatus, getCommits, getPresets, loadDiff, getRepoSummary } from './lib/git.js';
 import { hasProjectFacts } from './lib/facts.js';
 import { buildProjectOverview, renderProjectTree, renderImports, renderEndpoints } from './lib/project.js';
+import { listWorktreeFiles, readWorktreeFile } from './lib/files.js';
 import { mentorHandler } from './lib/mentor.js';
 import { localAccess, RepositoryRegistry, httpError, redactKnownSecret } from './lib/security.js';
 import express from 'express';
@@ -200,6 +201,26 @@ app.get('/api/repos/:repoId/commits', async (req, res) => {
       msg: `当前未提交改动 (${status.length} 个文件)`, author: 'You', relTime: 'Just now',
       isWorkingTree: true, fileCount: status.length });
     res.json(redactKnownSecret({ success: true, commits, presets, repoPath, dirtyCount: status.length }, config.proxyKey));
+  } catch (error) { sendFailure(res, error, lifecycle); }
+  finally { lifecycle.dispose(); }
+});
+
+app.get('/api/repos/:repoId/tree', async (req, res) => {
+  const lifecycle = requestLifecycle(res, 30000, '生成文件树超时');
+  try {
+    const repoPath = registry.resolve(req.params.repoId);
+    const { files, omitted, truncated } = await listWorktreeFiles(repoPath, { signal: lifecycle.signal });
+    res.json(redactKnownSecret({ success: true, files, omitted, truncated, repoPath }, config.proxyKey));
+  } catch (error) { sendFailure(res, error, lifecycle); }
+  finally { lifecycle.dispose(); }
+});
+
+app.get('/api/repos/:repoId/file', async (req, res) => {
+  const lifecycle = requestLifecycle(res, 20000, '读取文件超时');
+  try {
+    const repoPath = registry.resolve(req.params.repoId);
+    const file = readWorktreeFile(repoPath, typeof req.query.path === 'string' ? req.query.path : '');
+    res.json(redactKnownSecret({ success: true, ...file }, config.proxyKey));
   } catch (error) { sendFailure(res, error, lifecycle); }
   finally { lifecycle.dispose(); }
 });

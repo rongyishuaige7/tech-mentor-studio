@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { gitFixture } from './git-helper.js';
-import { collectProjectEvidence, renderProjectTree, selectProjectSources, buildImportGraph, listProjectFiles } from '../lib/project.js';
+import { collectProjectEvidence, collectFileEvidence, renderProjectTree, selectProjectSources, buildImportGraph, listProjectFiles } from '../lib/project.js';
 
 function demoRepo(t) {
   const fixture = gitFixture(t);
@@ -77,4 +77,25 @@ test('sources prefer entry points and the modules others depend on', async t => 
   assert.ok(sources.includes('lib/util.js'), sources.join(','));
   assert.ok(sources.includes('lib/helper.js'), sources.join(','));
   assert.ok(sources.length <= 16);
+});
+
+test('file evidence carries the file, its imports and the modules that import it', async t => {
+  const { root, write, commit } = gitFixture(t);
+  write('package.json', JSON.stringify({ name: 'demo' }, null, 2));
+  write('server.js', "import { helper } from './lib/helper.js';\nhelper();\n");
+  write('lib/helper.js', "import { util } from './util.js';\nexport const helper = () => util();\n");
+  write('lib/util.js', 'export const util = () => 1;\n');
+  write('README.md', '# demo\n');
+  commit('first');
+  // The reader is looking at the working copy, not the commit.
+  write('lib/helper.js', "import { util } from './util.js';\nexport const helper = () => util() + 1;\n");
+
+  const evidence = await collectFileEvidence(root, 'lib/helper.js');
+  assert.match(evidence.excerpt.excerpt, /1: import/);
+  assert.match(evidence.excerpt.excerpt, /util\(\) \+ 1/);
+  assert.deepEqual(evidence.imports, ['lib/util.js']);
+  assert.deepEqual(evidence.importedBy, ['server.js']);
+  assert.ok(evidence.documents.some(doc => doc.path === 'README.md'));
+  assert.equal(evidence.lines, 2);
+  assert.deepEqual(evidence.warnings, []);
 });

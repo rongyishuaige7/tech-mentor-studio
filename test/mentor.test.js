@@ -229,3 +229,37 @@ test('a walkthrough reads the whole project instead of the selected commit', asy
   assert.equal(anatomy.requestedTarget, 'HEAD');
   assert.match(payloads.at(-1).messages[1].content, /<diff>/);
 });
+
+test('a file scope sends that file and its graph neighbours instead of a diff', async t => {
+  const { root, write, commit } = gitFixture(t);
+  write('README.md', '# demo\n');
+  write('src/a.js', "import { b } from './b.js';\nexport const a = b;\n");
+  write('src/b.js', 'export const b = 1;\n');
+  commit('first');
+  // The working copy is what the reader sees, so the snapshot follows it.
+  write('src/a.js', "import { b } from './b.js';\nexport const a = b + 1;\n");
+
+  const payloads = [];
+  const { request } = await appFixture(t, root, { fetchImpl: async (url, options) => { payloads.push(JSON.parse(options.body)); return completion(); } });
+  await request('/api/repos');
+  const analyze = body => request('/api/mentor/analyze', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ repoPath: root, target: 'file', focusFile: 'src/a.js', mode: 'anatomy', ...body })
+  });
+
+  const snapshot = events(await (await analyze({})).text()).find(event => event.type === 'snapshot');
+  assert.equal(snapshot.requestedTarget, 'file');
+  assert.equal(snapshot.focusFile, 'src/a.js');
+  assert.equal(snapshot.evidence.scope, 'file');
+  const context = payloads[0].messages[1].content;
+  assert.match(context, /<file path="src\/a\.js">/);
+  assert.match(context, /b \+ 1/);
+  assert.match(context, /<imports>/);
+  assert.match(context, /src\/b\.js/);
+  assert.doesNotMatch(context, /<diff>/);
+
+  const follow = await analyze({ snapshotId: snapshot.snapshotId, history: [{ role: 'assistant', content: 'answer' }], customPrompt: 'why' });
+  assert.match(await follow.text(), /finished/);
+  assert.equal(payloads[1].messages[1].content, context);
+  assert.equal((await analyze({ target: 'file', focusFile: '' })).status, 400);
+});

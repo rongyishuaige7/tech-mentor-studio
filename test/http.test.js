@@ -197,3 +197,28 @@ test('the diff route serves a whole-project overview instead of a diff', async t
   assert.deepEqual(body.project.deps, { express: '1.0.0' });
   assert.ok(Array.isArray(body.project.entryPoints) && body.project.entryPoints.includes('server.js'));
 });
+
+test('the file routes list the working tree and return file contents', async t => {
+  const { root, write, commit } = gitFixture(t);
+  write('src/app.js', 'const a = 1;\n');
+  write('README.md', '# demo\n');
+  commit('first');
+  write('src/new.js', 'export const b = 2;\n');
+
+  const { request } = await appFixture(t, root);
+  const repos = await (await request('/api/repos')).json();
+  const id = repos.repos[0].id;
+
+  const tree = await (await request(`/api/repos/${id}/tree`)).json();
+  assert.equal(tree.success, true);
+  assert.ok(tree.files.some(file => file.path === 'src/new.js' && file.tracked === false));
+  assert.ok(tree.files.some(file => file.path === 'src/app.js' && file.tracked === true));
+
+  const file = await (await request(`/api/repos/${id}/file?path=src%2Fapp.js`)).json();
+  assert.equal(file.success, true);
+  assert.match(file.text, /const a = 1/);
+  assert.equal(file.lines, 1);
+
+  assert.equal((await request(`/api/repos/${id}/file?path=../secret`)).status, 400);
+  assert.equal((await request(`/api/repos/${id}/file`)).status, 400);
+});

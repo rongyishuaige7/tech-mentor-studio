@@ -23,10 +23,38 @@ let currentDiffAbortController = null;
 let conversationHistory = [];
 let mentorSnapshotId = null;
 let mentorResolvedTarget = null;
+let mentorFocusFile = null;
 let mentorRequestedTarget = null;
 // What the conversation is about ({ file: null } = all files). It is fixed when
 // the conversation starts; viewing other files in the diff does not change it.
 let mentorScope = null;
+// 中间栏有两个视图：文件（默认）与变更。对话按“当前在看什么”分键保存，
+// 所以打开另一个文件或切到某次提交都会带回各自的那段对话。
+let currentView = 'file';
+let currentFilePath = null;
+let currentFile = null;
+let filePage = 0;
+let treeFiles = [];
+let treeExpanded = new Set();
+let treeFilter = '';
+let treeSequence = 0;
+let fileSequence = 0;
+let mentorScopeKey = null;
+const FILE_PAGE_SIZE = 2000;
+
+// With no file open, the scope is the selected change: that is the only content
+// the mentor can point at.
+function activeScopeKey() {
+  if (currentView === 'file' && currentFilePath) return `file:${currentFilePath}`;
+  return activeTarget;
+}
+function activeScopeTarget() {
+  if (currentView === 'file' && currentFilePath) return 'file';
+  return activeTarget;
+}
+function activeScopeFile() {
+  return currentView === 'file' ? currentFilePath : currentFocusFile;
+}
 // Conversations are kept per repository and target, so browsing to another
 // commit and back finds the discussion where it was left.
 const mentorSessions = new Map();
@@ -78,6 +106,8 @@ function captureSession() {
     mentorSnapshotId,
     mentorResolvedTarget,
     mentorRequestedTarget,
+    mentorFocusFile,
+    scopeKey: mentorScopeKey,
     scopeFile: mentorScope ? mentorScope.file : null,
     chatHtml
   };
@@ -85,9 +115,11 @@ function captureSession() {
 
 function saveCurrentSession() {
   if (!activeRepo) return;
-  lastRepoView.set(activeRepo.id, { target: activeTarget, viewFile: currentFocusFile });
+  lastRepoView.set(activeRepo.id, { target: activeTarget, viewFile: currentFocusFile, view: currentView, file: currentFilePath });
   if (!conversationHistory.length) return;
-  const key = sessionKey(activeRepo.id, activeTarget);
+  // The conversation belongs to the scope it was started in, not to whatever is
+  // on screen now.
+  const key = sessionKey(activeRepo.id, mentorScopeKey || activeScopeKey());
   mentorSessions.delete(key);
   mentorSessions.set(key, captureSession());
   while (mentorSessions.size > MAX_SAVED_SESSIONS) mentorSessions.delete(mentorSessions.keys().next().value);
@@ -104,6 +136,8 @@ function restoreSession(saved) {
   mentorSnapshotId = saved.mentorSnapshotId;
   mentorResolvedTarget = saved.mentorResolvedTarget;
   mentorRequestedTarget = saved.mentorRequestedTarget || null;
+  mentorFocusFile = saved.mentorFocusFile || null;
+  mentorScopeKey = saved.scopeKey || null;
   mentorScope = { file: saved.scopeFile ?? null };
   const chatStream = document.getElementById('mentor-chat-stream');
   if (chatStream && saved.chatHtml) {
@@ -119,7 +153,7 @@ function restoreSession(saved) {
 // undone for a few seconds, so one mis-click never costs a study session.
 function clearCurrentMentorSession({ undoable = true, notice = '已清空对话' } = {}) {
   const saved = undoable && conversationHistory.length ? captureSession() : null;
-  const key = activeRepo ? sessionKey(activeRepo.id, activeTarget) : null;
+  const key = activeRepo ? sessionKey(activeRepo.id, mentorScopeKey || activeScopeKey()) : null;
   if (key) mentorSessions.delete(key);
   clearMentorSession();
   if (saved && key) showMentorNotice(notice, { key, saved });
@@ -148,7 +182,9 @@ function hideMentorNotice() {
 function undoClearMentorSession() {
   const pending = pendingUndo;
   hideMentorNotice();
-  if (!pending || !activeRepo || pending.key !== sessionKey(activeRepo.id, activeTarget) || conversationHistory.length) return;
+  // Any scope change hides the notice and drops the pending undo, so a visible
+  // undo always belongs to what is on screen.
+  if (!pending || !activeRepo || conversationHistory.length) return;
   restoreSession(pending.saved);
   saveCurrentSession();
 }
@@ -159,13 +195,15 @@ function renderMentorScope() {
   const text = document.getElementById('mentor-scope-text');
   const button = document.getElementById('btn-scope-new');
   if (!text || !button) return;
-  const name = file => file ? file.split('/').pop() : '全部文件';
+  const fallback = () => activeScopeTarget() === 'project' ? '整个项目' : '全部文件';
+  const name = file => file ? file.split('/').pop() : fallback();
   const active = mentorScope && (conversationHistory.length > 0 || currentAbortController);
-  const shown = active ? mentorScope.file : currentFocusFile;
+  const now = activeScopeFile();
+  const shown = active ? mentorScope.file : now;
   text.textContent = `${active ? '讨论范围' : '新对话将针对'}：${name(shown)}`;
-  text.title = shown || '本次改动的全部文件';
-  if (active && currentFocusFile !== mentorScope.file) {
-    button.textContent = `针对${currentFocusFile ? ` ${name(currentFocusFile)} ` : '全部文件'}新开对话`;
+  text.title = shown || (activeScopeTarget() === 'project' ? '整个项目' : '本次改动的全部文件');
+  if (active && now !== mentorScope.file) {
+    button.textContent = `针对${now ? ` ${name(now)} ` : '全部文件'}新开对话`;
     button.title = '结束当前对话（可撤销），下一次提问针对正在查看的内容';
     button.classList.remove('hidden');
   } else {
@@ -176,11 +214,8 @@ function renderMentorScope() {
 // Starts a new analysis when there is no usable snapshot for the current
 // selection; otherwise the action becomes a follow-up on the same evidence.
 async function triggerMentorAction(mode) {
-  // Each action picks its natural scope first, and the diff is loaded before the
-  // request so file references in the answer resolve against it.
-  if (mode === 'walkthrough' && activeTarget !== 'project' && activeRepo) {
-    await selectTarget('project');
-  } else if (mode !== 'walkthrough' && activeTarget === 'project' && activeRepo) {
+  // The three change-scoped actions need a diff target; "整个项目" has none.
+  if (mode !== 'walkthrough' && currentView === 'diff' && activeTarget === 'project' && activeRepo) {
     await selectTarget(currentCommits[0]?.hash || 'working-tree');
   }
   return startMentorAnalysis(mode, '', false);
@@ -712,6 +747,7 @@ function setupEventListeners() {
       case 'focus-all': window.setFocusFile(null); break;
       case 'ask': window.quickAsk(value); break;
       case 'diff-page': diffPage = Number(value); renderActiveDiff(false); break;
+      case 'file-page': filePage = Number(value); renderFile(); break;
       case 'panel': showPanel(value); break;
     }
   });
@@ -728,7 +764,10 @@ function setupEventListeners() {
   document.getElementById('btn-theme-toggle')?.addEventListener('click', toggleTheme);
   document.getElementById('btn-retry-models').addEventListener('click', loadModels);
   document.getElementById('model-select').addEventListener('change', event => { try { localStorage.setItem('mentor-model', event.target.value); } catch {} });
-  document.getElementById('repo-search').addEventListener('input', handleRepoFilter);
+  document.getElementById('repo-select').addEventListener('change', event => {
+    if (event.target.value) window.selectRepoById(event.target.value);
+  });
+  setupFileBrowser();
   document.getElementById('btn-add-repo').addEventListener('click', handleAddRepo);
   document.getElementById('btn-add-repo-manual')?.addEventListener('click', handleAddRepoManual);
 
@@ -812,13 +851,57 @@ function setupEventListeners() {
   }
 }
 
-// 1. 加载仓库列表
+// 文件树与文件视图的事件绑定：点击、键盘导航、筛选和视图标签。
+function setupFileBrowser() {
+  const tree = document.getElementById('file-tree');
+  tree.addEventListener('click', event => {
+    const row = event.target.closest('.tree-row');
+    if (!row) return;
+    if (row.dataset.kind === 'dir') toggleTreeDir(row.dataset.path);
+    else openFile(row.dataset.path);
+  });
+  tree.addEventListener('keydown', event => {
+    const row = event.target.closest('.tree-row');
+    if (!row) return;
+    const rows = [...tree.querySelectorAll('.tree-row')];
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      rows[rows.indexOf(row) + (event.key === 'ArrowDown' ? 1 : -1)]?.focus();
+    } else if (event.key === 'ArrowRight' && row.dataset.kind === 'dir') {
+      event.preventDefault();
+      if (!treeExpanded.has(row.dataset.path)) toggleTreeDir(row.dataset.path);
+      else rows[rows.indexOf(row) + 1]?.focus();
+    } else if (event.key === 'ArrowLeft' && row.dataset.kind === 'dir') {
+      event.preventDefault();
+      if (treeExpanded.has(row.dataset.path)) toggleTreeDir(row.dataset.path);
+    } else if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      if (row.dataset.kind === 'dir') toggleTreeDir(row.dataset.path);
+      else openFile(row.dataset.path);
+    }
+  });
+
+  let filterTimer = null;
+  document.getElementById('file-filter').addEventListener('input', event => {
+    clearTimeout(filterTimer);
+    const value = event.target.value;
+    filterTimer = setTimeout(() => { treeFilter = value; renderTree(); }, 120);
+  });
+
+  for (const tab of document.querySelectorAll('.view-tab')) {
+    tab.addEventListener('click', () => switchView(tab.dataset.view));
+  }
+  document.getElementById('btn-copy-file').addEventListener('click', copyCurrentFile);
+  document.getElementById('btn-diff-file').addEventListener('click', showFileInDiff);
+}
+
+// 1. 仓库选择器：仓库很多，用原生下拉比再铺一列列表更省空间。
 async function loadRepos(refresh = false) {
   const sequence = ++reposLoadSequence;
   const refreshButton = document.getElementById('btn-refresh');
   refreshButton.disabled = true;
-  const listEl = document.getElementById('repo-list');
-  listEl.innerHTML = '<div class="text-xs text-[var(--text-muted)] text-center py-8">正在扫描本地 Git 仓库...</div>';
+  const select = document.getElementById('repo-select');
+  select.innerHTML = '<option value="">正在扫描本地仓库…</option>';
 
   try {
     const res = await apiFetch(`/api/repos${refresh ? '?refresh=1' : ''}`);
@@ -828,80 +911,28 @@ async function loadRepos(refresh = false) {
     if (sequence !== reposLoadSequence) return;
     allRepos = data.repos;
     if (activeRepo) activeRepo = allRepos.find(repo => repo.id === activeRepo.id) || activeRepo;
-    document.getElementById('repo-count').textContent = allRepos.length;
-    handleRepoFilter({ target: document.getElementById('repo-search') });
+    renderRepoOptions();
 
-    if (allRepos.length > 0 && !activeRepo) {
-      selectRepo(allRepos[0]);
-    }
+    if (allRepos.length > 0 && !activeRepo) selectRepo(allRepos[0]);
   } catch (err) {
-    if (sequence === reposLoadSequence) listEl.innerHTML = `<div class="text-xs text-[var(--diff-del-text)] text-center py-6">加载仓库失败: ${escapeHtml(err.message)}</div>`;
+    if (sequence === reposLoadSequence) select.innerHTML = `<option value="">加载仓库失败：${escapeHtml(err.message)}</option>`;
   } finally {
     if (sequence === reposLoadSequence) refreshButton.disabled = false;
   }
 }
 
-function renderRepoList(repos) {
-  const listEl = document.getElementById('repo-list');
-  if (repos.length === 0) {
-    listEl.innerHTML = '<div class="text-xs text-[var(--text-muted)] text-center py-6">未发现 Git 仓库</div>';
-    return;
-  }
-
-  const focused = focusedRow(listEl);
-  listEl.innerHTML = repos.map(repo => {
-    const isSelected = activeRepo && activeRepo.id === repo.id;
-    const hasDirty = repo.dirtyCount > 0;
-
-    return `
-      <div data-action="repo" data-value="${escapeHtml(repo.id)}" role="button" tabindex="0" aria-current="${isSelected ? 'true' : 'false'}"
-           class="p-2.5 rounded-lg cursor-pointer transition flex flex-col gap-1 border ${
-             isSelected
-               ? 'bg-[var(--bg-surface-hover)] border-[var(--accent-terracotta)] text-[var(--text-primary)]'
-               : 'bg-[var(--bg-card)] border-[var(--border-subtle)] hover:bg-[var(--bg-card-hover)] text-[var(--text-secondary)]'
-           }">
-        <div class="flex items-center justify-between">
-          <span class="repo-name font-medium text-xs truncate flex items-center gap-1.5">
-            <i data-lucide="folder-git-2" class="w-3.5 h-3.5 ${isSelected ? 'text-[var(--accent-terracotta)]' : 'text-[var(--text-muted)]'}"></i>
-            <span class="truncate">${escapeHtml(repo.name)}</span>
-          </span>
-          ${hasDirty
-            ? `<span class="text-[10px] px-2 py-0.2 rounded-full bg-[var(--accent-terracotta-bg)] text-[var(--accent-terracotta)] border border-[var(--accent-terracotta-border)] font-mono font-medium shrink-0">${repo.dirtyCount} 变动</span>`
-            : `<span class="text-[10px] text-[var(--text-subtle)] font-mono">${escapeHtml(repo.branch)}</span>`
-          }
-        </div>
-        ${repo.error ? `<div class="text-[11px] text-[var(--diff-del-text)]">读取失败: ${escapeHtml(repo.error)}</div>` : ''}
-        ${repo.lastCommit ? `
-          <div class="text-[11px] text-[var(--text-muted)] truncate mt-0.5">
-            ${escapeHtml(repo.lastCommit.msg)}
-          </div>
-          <div class="text-[10px] text-[var(--text-subtle)] flex items-center justify-between mt-0.5 font-mono">
-            <span>${escapeHtml(repo.lastCommit.author)}</span>
-            <span>${escapeHtml(repo.lastCommit.time)}</span>
-          </div>
-        ` : ''}
-      </div>
-    `;
-  }).join('');
-
-  lucide.createIcons();
-  restoreFocus(listEl, focused);
+function renderRepoOptions() {
+  const select = document.getElementById('repo-select');
+  select.innerHTML = allRepos.length
+    ? allRepos.map(repo => `<option value="${escapeHtml(repo.id)}">${escapeHtml(repo.name)}${repo.dirtyCount ? ` · ${repo.dirtyCount} 改动` : ''}</option>`).join('')
+    : '<option value="">未发现 Git 仓库</option>';
+  if (activeRepo) select.value = activeRepo.id;
 }
 
 window.selectRepoById = (id) => {
   const repo = allRepos.find(r => r.id === id);
   if (repo) selectRepo(repo);
 };
-
-function handleRepoFilter(e) {
-  const q = e.target.value.toLowerCase().trim();
-  const filtered = allRepos.filter(r =>
-    r.name.toLowerCase().includes(q) ||
-    r.path.toLowerCase().includes(q) ||
-    (r.lastCommit && r.lastCommit.msg.toLowerCase().includes(q))
-  );
-  renderRepoList(filtered);
-}
 
 async function handleAddRepo() {
   const addBtn = document.getElementById('btn-add-repo');
@@ -989,7 +1020,14 @@ async function selectRepo(repo) {
   activeRepo = repo;
   currentFocusFile = null;
   clearMentorSession();
-  handleRepoFilter({ target: document.getElementById('repo-search') });
+
+  const saved = lastRepoView.get(repo.id);
+  currentView = saved?.view === 'diff' ? 'diff' : 'file';
+  currentFilePath = saved?.file || null;
+  currentFile = null;
+  renderViewTabs();
+  renderFilePlaceholder();
+  document.getElementById('repo-select').value = repo.id;
 
   document.getElementById('active-repo-name').textContent = repo.name;
   document.getElementById('active-repo-path').textContent = repo.path;
@@ -999,6 +1037,9 @@ async function selectRepo(repo) {
 
   const commitListEl = document.getElementById('commit-list');
   commitListEl.innerHTML = '<div class="text-xs text-[var(--text-muted)] text-center py-6">正在读取变动记录...</div>';
+
+  // The tree and the commit list are independent: start both.
+  loadTree(repo, saved);
 
   try {
     const res = await apiFetch(`/api/repos/${repo.id}/commits`, { signal: controller.signal });
@@ -1013,20 +1054,20 @@ async function selectRepo(repo) {
       : data.dirtyCount === 0
         ? (data.commits.find(commit => !commit.isWorkingTree)?.hash || data.commits[0].hash)
         : data.commits[0].hash;
-    const view = lastRepoView.get(repo.id);
     let target = defaultTarget;
     let viewFile = null;
-    if (view?.target && isKnownTarget(view.target, data)) {
-      target = view.target;
-      viewFile = view.viewFile || null;
+    if (saved?.target && isKnownTarget(saved.target, data)) {
+      target = saved.target;
+      viewFile = saved.viewFile || null;
     }
 
     activeTarget = target;
     currentFocusFile = viewFile;
-    restoreSession(mentorSessions.get(sessionKey(repo.id, target)));
+    restoreSession(mentorSessions.get(sessionKey(repo.id, activeScopeKey())));
     renderCommitPresets(currentPresets);
     renderCommitList(currentCommits);
     fetchDiff(repo.id, target);
+    renderMentorScope();
   } catch (err) {
     if (sequence !== repoRequestSequence || err.name === 'AbortError') return;
     commitListEl.innerHTML = `<div class="text-xs text-[var(--diff-del-text)] text-center py-4">读取提交失败: ${escapeHtml(err.message)}</div>`;
@@ -1147,6 +1188,250 @@ window.selectTarget = (targetHash) => {
   renderCommitList(currentCommits);
   return activeRepo ? fetchDiff(activeRepo.id, targetHash) : Promise.resolve();
 };
+
+// ---- 中间栏视图：文件 / 变更 ----
+function renderViewTabs() {
+  for (const tab of document.querySelectorAll('.view-tab')) {
+    tab.setAttribute('aria-selected', String(tab.dataset.view === currentView));
+  }
+  document.getElementById('file-view')?.classList.toggle('hidden', currentView !== 'file');
+  document.getElementById('diff-view')?.classList.toggle('hidden', currentView !== 'diff');
+}
+
+// Only the tab click changes what the mentor is looking at; jumping to a diff
+// line or opening the change view is navigation and keeps the conversation.
+function setView(view) {
+  currentView = view;
+  renderViewTabs();
+}
+
+// Switching tabs is navigation: it never clears the conversation. A new
+// analysis that resolves to a different scope starts a fresh one.
+function switchView(view) {
+  if (view === currentView) return;
+  setView(view);
+  renderMentorScope();
+}
+
+const formatBytes = bytes => bytes < 1024 ? `${bytes}B` : bytes < 1048576 ? `${(bytes / 1024).toFixed(1)}k` : `${(bytes / 1048576).toFixed(1)}M`;
+
+function renderFilePlaceholder() {
+  document.getElementById('file-path-label').textContent = currentFilePath || '未打开文件';
+  document.getElementById('file-stat-badge').classList.add('hidden');
+  document.getElementById('btn-diff-file').classList.add('hidden');
+  const content = document.getElementById('file-content');
+  if (content) content.innerHTML = '<div class="p-8 text-center text-[var(--text-subtle)]">从左侧选择一个文件开始阅读</div>';
+  const pager = document.getElementById('file-pagination');
+  if (pager) { pager.classList.add('hidden'); pager.innerHTML = ''; }
+}
+
+// ---- 文件树 ----
+async function loadTree(repo, saved) {
+  const sequence = ++treeSequence;
+  const el = document.getElementById('file-tree');
+  el.innerHTML = '<div class="text-[var(--text-subtle)] text-center py-6">正在读取文件树…</div>';
+  try {
+    const res = await apiFetch(`/api/repos/${repo.id}/tree`);
+    const data = await res.json();
+    if (!data.success) throw new Error(data.error);
+    if (sequence !== treeSequence || activeRepo?.id !== repo.id) return;
+    treeFiles = data.files || [];
+    treeExpanded = new Set();
+    treeFilter = '';
+    document.getElementById('file-filter').value = '';
+    document.getElementById('tree-stat').textContent = `${treeFiles.length} 个文件${data.omitted ? ` · 省略 ${data.omitted}` : ''}`;
+    renderTree();
+    const wanted = saved?.file || currentFilePath;
+    if (wanted && treeFiles.some(file => file.path === wanted)) openFile(wanted, { keepView: true });
+  } catch (error) {
+    if (sequence !== treeSequence) return;
+    el.innerHTML = `<div class="text-[var(--diff-del-text)] text-center py-6">读取文件树失败：${escapeHtml(error.message)}</div>`;
+  }
+}
+
+function buildTreeModel() {
+  const root = { dirs: new Map(), files: [] };
+  for (const file of treeFiles) {
+    const parts = file.path.split('/');
+    let node = root;
+    for (let i = 0; i < parts.length - 1; i++) {
+      const name = parts[i];
+      if (!node.dirs.has(name)) node.dirs.set(name, { name, path: parts.slice(0, i + 1).join('/'), dirs: new Map(), files: [] });
+      node = node.dirs.get(name);
+    }
+    node.files.push({ ...file, name: parts.at(-1) });
+  }
+  return root;
+}
+
+const fileRowHtml = (file, depth) => `
+  <div class="tree-row" role="treeitem" tabindex="0" aria-selected="${currentFilePath === file.path}" data-kind="file" data-path="${escapeHtml(file.path)}"
+       style="padding-left:${6 + depth * 12}px" title="${escapeHtml(file.path)}">
+    <span class="tree-caret"></span>
+    <span class="tree-name">${escapeHtml(file.name)}</span>
+    ${file.tracked ? '' : '<span class="tree-dot" title="未跟踪"></span>'}
+    <span class="tree-size">${formatBytes(file.size)}</span>
+  </div>`;
+
+const dirRowHtml = (dir, depth, open) => `
+  <div class="tree-row" role="treeitem" tabindex="0" aria-expanded="${open}" data-kind="dir" data-path="${escapeHtml(dir.path)}"
+       style="padding-left:${6 + depth * 12}px" title="${escapeHtml(dir.path)}">
+    <span class="tree-caret">${open ? '▾' : '▸'}</span>
+    <span class="tree-name">${escapeHtml(dir.name)}</span>
+  </div>`;
+
+function renderTree() {
+  const el = document.getElementById('file-tree');
+  if (!treeFiles.length) { el.innerHTML = '<div class="text-[var(--text-subtle)] text-center py-8">没有可显示的文件</div>'; return; }
+  const filter = treeFilter.trim().toLowerCase();
+  if (filter) {
+    // A filter turns the tree into a flat result list.
+    const matches = treeFiles.filter(file => file.path.toLowerCase().includes(filter)).slice(0, 400);
+    el.innerHTML = matches.length
+      ? matches.map(file => fileRowHtml({ ...file, name: file.path.split('/').pop() }, 0)).join('')
+      : '<div class="text-[var(--text-subtle)] text-center py-8">没有匹配的文件</div>';
+    return;
+  }
+  const root = buildTreeModel();
+  const rows = [];
+  const walk = (node, depth) => {
+    for (const dir of [...node.dirs.values()].sort((a, b) => a.name.localeCompare(b.name))) {
+      const open = treeExpanded.has(dir.path);
+      rows.push(dirRowHtml(dir, depth, open));
+      if (open) walk(dir, depth + 1);
+    }
+    for (const file of [...node.files].sort((a, b) => a.name.localeCompare(b.name))) rows.push(fileRowHtml(file, depth));
+  };
+  walk(root, 0);
+  el.innerHTML = rows.join('');
+}
+
+function toggleTreeDir(path) {
+  if (treeExpanded.has(path)) treeExpanded.delete(path); else treeExpanded.add(path);
+  renderTree();
+  [...document.querySelectorAll('#file-tree .tree-row')].find(row => row.dataset.path === path)?.focus();
+}
+
+function markTreeSelection() {
+  document.querySelectorAll('#file-tree .tree-row[data-kind="file"]').forEach(row => {
+    row.setAttribute('aria-selected', String(row.dataset.path === currentFilePath));
+  });
+}
+
+// ---- 文件查看器 ----
+const LANGUAGE_BY_EXT = {
+  js: 'javascript', mjs: 'javascript', cjs: 'javascript', jsx: 'javascript', ts: 'typescript', tsx: 'typescript',
+  json: 'json', css: 'css', scss: 'scss', html: 'xml', htm: 'xml', svg: 'xml', md: 'markdown', py: 'python',
+  go: 'go', rs: 'rust', java: 'java', kt: 'kotlin', rb: 'ruby', php: 'php', sh: 'bash', bash: 'bash', zsh: 'bash',
+  yml: 'yaml', yaml: 'yaml', toml: 'ini', ini: 'ini', sql: 'sql', c: 'c', h: 'c', cpp: 'cpp', hpp: 'cpp',
+  cs: 'csharp', swift: 'swift', dockerfile: 'dockerfile'
+};
+const languageFor = path => LANGUAGE_BY_EXT[path.split('.').pop()?.toLowerCase()] || (/(^|\/)Dockerfile$/.test(path) ? 'dockerfile' : null);
+
+function highlightSource(text, language) {
+  if (language && window.hljs?.getLanguage?.(language)) {
+    try { return hljs.highlight(text, { language, ignoreIllegals: true }).value; } catch {}
+  }
+  return escapeHtml(text);
+}
+
+// A highlighted block can leave a span open across lines (block comments,
+// template strings). Close it at the end of each line and reopen it on the next
+// one, so every row is valid HTML on its own.
+function splitHighlightedLines(html) {
+  const lines = [];
+  const open = [];
+  for (const raw of html.split('\n')) {
+    lines.push(open.join('') + raw + '</span>'.repeat(open.length));
+    const tag = /<span\b[^>]*>|<\/span>/g;
+    let match;
+    while ((match = tag.exec(raw))) {
+      if (match[0] === '</span>') open.pop();
+      else open.push(match[0]);
+    }
+  }
+  return lines;
+}
+
+async function openFile(filePath, { keepView = false } = {}) {
+  if (!activeRepo) return;
+  currentFilePath = filePath;
+  if (!keepView && currentView !== 'file') { currentView = 'file'; renderViewTabs(); }
+  const sequence = ++fileSequence;
+  filePage = 0;
+  const content = document.getElementById('file-content');
+  content.innerHTML = '<div class="p-6 text-center text-[var(--text-subtle)]">正在读取文件…</div>';
+  try {
+    const res = await apiFetch(`/api/repos/${activeRepo.id}/file?path=${encodeURIComponent(filePath)}`);
+    const data = await res.json();
+    if (!data.success) throw new Error(data.error);
+    if (sequence !== fileSequence) return;
+    currentFile = data;
+    renderFile();
+    updateFileHeader();
+    markTreeSelection();
+    renderMentorScope();
+  } catch (error) {
+    if (sequence !== fileSequence) return;
+    content.innerHTML = `<div class="p-6 text-[var(--diff-del-text)]">${escapeHtml(error.message)}</div>`;
+  }
+}
+
+function renderFile() {
+  const content = document.getElementById('file-content');
+  if (!currentFile) { renderFilePlaceholder(); return; }
+  const text = currentFile.text.endsWith('\n') ? currentFile.text.slice(0, -1) : currentFile.text;
+  const rows = splitHighlightedLines(highlightSource(text, languageFor(currentFile.path)));
+  const pages = Math.max(1, Math.ceil(rows.length / FILE_PAGE_SIZE));
+  filePage = Math.max(0, Math.min(pages - 1, filePage));
+  const start = filePage * FILE_PAGE_SIZE;
+  content.innerHTML = rows.slice(start, start + FILE_PAGE_SIZE).map((html, index) => {
+    const number = start + index + 1;
+    return `<div class="file-line" data-line="${number}"><span class="file-num">${number}</span><span class="file-text">${html || ' '}</span></div>`;
+  }).join('');
+  renderFilePagination(pages);
+}
+
+function renderFilePagination(pages) {
+  const el = document.getElementById('file-pagination');
+  if (pages <= 1) { el.classList.add('hidden'); el.innerHTML = ''; return; }
+  el.classList.remove('hidden');
+  el.innerHTML = `
+    <span>第 ${filePage + 1} / ${pages} 页 · 共 ${currentFile.lines} 行</span>
+    <span class="flex items-center gap-1.5">
+      <button data-action="file-page" data-value="${filePage - 1}" ${filePage === 0 ? 'disabled' : ''} class="px-2 py-0.5 rounded border border-[var(--border-app)] bg-[var(--btn-action-bg)] disabled:opacity-40">上一页</button>
+      <button data-action="file-page" data-value="${filePage + 1}" ${filePage === pages - 1 ? 'disabled' : ''} class="px-2 py-0.5 rounded border border-[var(--border-app)] bg-[var(--btn-action-bg)] disabled:opacity-40">下一页</button>
+    </span>`;
+}
+
+function updateFileHeader() {
+  document.getElementById('file-path-label').textContent = currentFile.path;
+  const badge = document.getElementById('file-stat-badge');
+  badge.textContent = `${currentFile.lines} 行 · ${formatBytes(currentFile.bytes)}`;
+  badge.classList.remove('hidden');
+  document.getElementById('btn-diff-file').classList.toggle('hidden', !currentDiffFiles.some(file => file.path === currentFile.path));
+}
+
+async function copyCurrentFile() {
+  if (!currentFile) return;
+  const button = document.getElementById('btn-copy-file');
+  try {
+    await navigator.clipboard.writeText(currentFile.text);
+    if (!button) return;
+    button.innerHTML = '<i data-lucide="check" class="w-3 h-3 text-[var(--diff-add-text)]"></i> 已复制';
+    lucide.createIcons();
+    setTimeout(() => { button.innerHTML = '<i data-lucide="copy" class="w-3 h-3"></i> 复制'; lucide.createIcons(); }, 2000);
+  } catch {
+    alert('复制失败，请手动选择复制');
+  }
+}
+
+function showFileInDiff() {
+  if (!currentFile) return;
+  if (!currentDiffFiles.some(file => file.path === currentFile.path)) return;
+  setView('diff');
+  window.setFocusFile(currentFile.path);
+}
 
 // 3. 加载 Diff 内容与变动文件树
 async function fetchDiff(repoId, target) {
@@ -1476,6 +1761,7 @@ function linkTextNode(textNode, paths) {
 
 function revealDiffLine(file, line, end = null) {
   showPanel('diff');
+  setView('diff');
   const target = currentDiffFiles.find(item => item.path === file);
   const diffEl = document.getElementById('diff-content');
   const notice = message => {
@@ -1551,12 +1837,37 @@ function selectedDiffRows() {
   return { from, to, rect: range.getBoundingClientRect() };
 }
 
+// The same "select lines, ask about them" gesture works in the file viewer.
+function selectedFileLines() {
+  const selection = window.getSelection?.();
+  if (!selection || selection.isCollapsed || !selection.rangeCount) return null;
+  const root = document.getElementById('file-content');
+  const range = selection.getRangeAt(0);
+  const rowOf = node => (node?.nodeType === 1 ? node : node?.parentElement)?.closest('.file-line');
+  const first = rowOf(range.startContainer), last = rowOf(range.endContainer);
+  if (!first || !last || !root?.contains(first) || !root?.contains(last)) return null;
+  const from = Number(first.dataset.line);
+  let to = Number(last.dataset.line);
+  if (range.endOffset === 0 && to > from) to--;
+  return { from, to, rect: range.getBoundingClientRect() };
+}
+
+const currentSelection = () => selectedDiffRows() || selectedFileLines();
+
+function fileSelectionPrompt(from, to) {
+  if (!currentFile) return '';
+  const lines = currentFile.text.split('\n').slice(from - 1, to);
+  if (!lines.length) return '';
+  const language = languageFor(currentFile.path) || '';
+  return `关于 ${currentFile.path}:${from}-${to}：\n\`\`\`${language}\n${lines.join('\n')}\n\`\`\`\n`;
+}
+
 let selectionFrame = 0;
 function updateAskSelection() {
   cancelAnimationFrame(selectionFrame);
   selectionFrame = requestAnimationFrame(() => {
     const button = document.getElementById('btn-ask-selection');
-    const selected = selectedDiffRows();
+    const selected = currentSelection();
     if (!button) return;
     if (!selected) { button.classList.add('hidden'); return; }
     button.style.top = `${Math.min(innerHeight - 44, selected.rect.bottom + 6)}px`;
@@ -1566,10 +1877,11 @@ function updateAskSelection() {
 }
 
 function askAboutSelection() {
-  const selected = selectedDiffRows();
+  const inDiff = selectedDiffRows();
+  const selected = inDiff || selectedFileLines();
   document.getElementById('btn-ask-selection')?.classList.add('hidden');
   if (!selected) return;
-  const quote = selectionPrompt(selected.from, selected.to);
+  const quote = inDiff ? selectionPrompt(selected.from, selected.to) : fileSelectionPrompt(selected.from, selected.to);
   if (!quote) return;
   window.getSelection().removeAllRanges();
   const input = document.getElementById('mentor-input');
@@ -1626,17 +1938,28 @@ async function startMentorAnalysis(mode, customPrompt = '', resetSession = false
   }
 
   showPanel('mentor');
-  if (!resetSession && (conversationHistory.length === 0 || !mentorSnapshotId || mentorRequestedTarget !== activeTarget)) {
+  // A walkthrough is always about the whole project; the other actions follow
+  // what the middle column shows (a file, or the selected change).
+  // A follow-up stays in the scope its conversation was pinned to; only a new
+  // conversation (or the "新开对话" button) re-reads what is on screen.
+  const pinned = !resetSession && mentorSnapshotId && mentorScopeKey
+    ? { key: mentorScopeKey, target: mentorRequestedTarget || activeScopeTarget(), file: mentorScope?.file ?? null }
+    : null;
+  const scope = mode === 'walkthrough'
+    ? { key: 'project', target: 'project', file: null }
+    : pinned || { key: activeScopeKey(), target: activeScopeTarget(), file: activeScopeFile() };
+  if (!resetSession && (conversationHistory.length === 0 || !mentorSnapshotId || mentorScopeKey !== scope.key)) {
     // A follow-up without a usable snapshot is a fresh analysis, never a
     // request that reuses stale evidence or a mismatched target.
     resetSession = true;
   }
   if (resetSession) {
     clearMentorSession();
-    if (activeRepo) mentorSessions.delete(sessionKey(activeRepo.id, activeTarget));
-    mentorScope = { file: currentFocusFile };
+    if (activeRepo) mentorSessions.delete(sessionKey(activeRepo.id, scope.key));
+    mentorScope = { file: scope.file };
+    mentorScopeKey = scope.key;
   }
-  const scopeFile = mentorScope ? mentorScope.file : currentFocusFile;
+  const scopeFile = mentorScope ? mentorScope.file : scope.file;
 
   if (currentAbortController) {
     currentAbortController.abort();
@@ -1748,10 +2071,10 @@ async function startMentorAnalysis(mode, customPrompt = '', resetSession = false
   }
   const payload = {
     repoPath: activeRepo.path,
-    target: activeTarget,
+    target: scope.target,
     mode,
     customPrompt,
-    focusFile: activeTarget === 'project' ? null : scopeFile,
+    focusFile: scope.target === 'file' ? scope.file : (scope.target === 'project' ? null : scopeFile),
     model: modelSelect.value,
     history: sentHistory,
     snapshotId: mentorSnapshotId
@@ -1812,6 +2135,7 @@ async function startMentorAnalysis(mode, customPrompt = '', resetSession = false
             mentorSnapshotId = event.snapshotId;
             mentorResolvedTarget = event.resolvedTarget;
             mentorRequestedTarget = typeof event.requestedTarget === 'string' ? event.requestedTarget : activeTarget;
+            mentorFocusFile = typeof event.focusFile === 'string' ? event.focusFile : null;
             snapshotRenewed = renewing || Boolean(event.renewed);
             if (typeof event.instruction === 'string' && event.instruction) turnInstruction = event.instruction;
             if (event.evidence && typeof event.evidence === 'object') turnEvidence = event.evidence;
@@ -1835,6 +2159,7 @@ async function startMentorAnalysis(mode, customPrompt = '', resetSession = false
               evidenceNotice.className = 'text-[10px] text-[var(--text-muted)] mt-2';
               const evidenceTarget = mentorRequestedTarget === 'project'
                 ? `整个项目 @ ${String(mentorResolvedTarget).slice(0, 8)}`
+                : mentorRequestedTarget === 'file' ? `文件 ${mentorFocusFile || ''}`
                 : mentorResolvedTarget === 'working-tree' ? '读取时的工作区' : mentorResolvedTarget;
               evidenceNotice.textContent = snapshotRenewed
                 ? `分析快照已在会话中重新捕获: ${evidenceTarget} · 早先回答可能基于旧证据`
@@ -1920,7 +2245,8 @@ function announce(message) {
 function renderEvidence(evidence) {
   const list = value => Array.isArray(value) ? value.filter(item => item && typeof item.path === 'string') : [];
   const project = evidence.scope === 'project';
-  const diffFiles = project ? [] : list(evidence.diff?.files), documents = list(evidence.documents), sources = list(evidence.sources);
+  const fileScope = evidence.scope === 'file';
+  const diffFiles = project || fileScope ? [] : list(evidence.diff?.files), documents = list(evidence.documents), sources = list(evidence.sources);
   const omitted = Math.max(0, Number(evidence.diff?.omitted) || 0);
   const cut = [...diffFiles, ...documents, ...sources].filter(item => item.truncated).length;
   const spans = ranges => Array.isArray(ranges) && ranges.length
@@ -1932,9 +2258,13 @@ function renderEvidence(evidence) {
   const redacted = Math.max(0, Number(scan?.redacted) || 0);
   const scanNote = !scan ? '' : scan.available === false ? ' · 未做密钥扫描' : redacted ? ` · ${redacted} 个疑似密钥已替换` : '';
   const stats = evidence.stats && typeof evidence.stats === 'object' ? evidence.stats : {};
+  const imports = Array.isArray(evidence.imports) ? evidence.imports.filter(item => typeof item === 'string') : [];
+  const importedBy = Array.isArray(evidence.importedBy) ? evidence.importedBy.filter(item => typeof item === 'string') : [];
   summary.textContent = project
     ? `本次依据：整个项目 @ ${String(evidence.revision || '').slice(0, 8)} · 清单 ${Number(stats.files) || 0} 个文件 · 引用边 ${Number(stats.edges) || 0} 条 · 端点 ${Number(stats.endpoints) || 0} 个 · 文档 ${documents.length} 份 · 源码 ${sources.length} 个文件${cut ? ` · ${cut} 处截断` : ''}${scanNote}`
-    : `本次依据：Diff ${diffFiles.length} 个文件${omitted ? `（另有 ${omitted} 个未展示）` : ''} · 文档 ${documents.length} 份 · 源码 ${sources.length} 个文件${cut ? ` · ${cut} 处截断` : ''}${scanNote}`;
+    : fileScope
+      ? `本次依据：文件 ${evidence.path || ''} · ${Number(evidence.lines) || 0} 行 · 依赖 ${imports.length} 个 · 被引用 ${importedBy.length} 处 · 文档 ${documents.length} 份${cut ? ` · ${cut} 处截断` : ''}${scanNote}`
+      : `本次依据：Diff ${diffFiles.length} 个文件${omitted ? `（另有 ${omitted} 个未展示）` : ''} · 文档 ${documents.length} 份 · 源码 ${sources.length} 个文件${cut ? ` · ${cut} 处截断` : ''}${scanNote}`;
   details.appendChild(summary);
   const section = (title, items, describe) => {
     if (!items.length) return;
@@ -1955,6 +2285,9 @@ function renderEvidence(evidence) {
     const hubs = list(evidence.hubs);
     section('入口', entryPoints.map(path => ({ path })), item => item.path);
     section('核心模块', hubs, item => `${item.path} ← ${Number(item.count) || 0} 个模块`);
+  } else if (fileScope) {
+    section('该文件依赖', imports.map(path => ({ path })), item => item.path);
+    section('引用该文件的模块', importedBy.map(path => ({ path })), item => item.path);
   } else {
     section('Diff', diffFiles, item => `${item.path}${item.truncated ? '（已截断）' : ''}`);
   }
@@ -2023,6 +2356,7 @@ function clearMentorSession() {
   mentorSnapshotId = null;
   mentorResolvedTarget = null;
   mentorRequestedTarget = null;
+  mentorFocusFile = null;
   mentorScope = null;
   hideMentorNotice();
   renderMentorScope();
@@ -2046,6 +2380,7 @@ function clearMentorSession() {
 // 复制整轮精读笔记为 Markdown
 // What the notes say they cover: the whole project or the selected revision.
 function scopeLabel() {
+  if (mentorRequestedTarget === 'file') return `文件 ${mentorFocusFile || ''}`;
   if (mentorRequestedTarget === 'project' || activeTarget === 'project') {
     const revision = mentorResolvedTarget && mentorResolvedTarget !== 'project' ? ` @ ${String(mentorResolvedTarget).slice(0, 8)}` : '';
     return `整个项目${revision}`;
