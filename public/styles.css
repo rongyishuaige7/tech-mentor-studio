@@ -356,6 +356,12 @@ body {
 /* Mermaid 图跟随主题背景；图本身在切换主题时按源码重绘 */
 .mermaid-box { background: var(--code-block-bg); border: 1px solid var(--code-block-border); }
 
+/* 解析失败的图：保留源码，而不是 mermaid 自带的 "Syntax error in text" 错误图 */
+.mermaid-fallback { border: 1px solid var(--code-block-border); border-radius: 0.5rem; overflow: hidden; background: var(--code-block-bg); }
+.mermaid-fallback .code-block-header { gap: 0.6rem; }
+.mermaid-fallback-hint { flex: 1; min-width: 0; text-align: right; font-size: 10px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mermaid-fallback pre { margin: 0; }
+
 /* 本次依据：模型实际收到的 Diff、文档与源码范围 */
 .evidence-details { margin-top: 6px; font-size: 11px; color: var(--text-secondary); }
 .evidence-details summary { cursor: pointer; color: var(--text-muted); }

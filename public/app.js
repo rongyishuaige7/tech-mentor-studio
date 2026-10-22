@@ -297,19 +297,87 @@ function loadMermaid() {
   return mermaidLoading;
 }
 
+// Mermaid's flowchart parser rejects `(` in an unquoted label, so an answer
+// containing `B[getUser()]` or `A[调用 (v2)]` renders as "Syntax error in text".
+// Quoting such a label makes it valid. Shapes with their own meaning
+// (`[(db)]`, `[[x]]`, `{{x}}`) and labels that are already quoted are untouched,
+// and only flowchart/graph sources are rewritten.
+function repairMermaid(source) {
+  if (!/^\s*(flowchart|graph)\b/.test(source)) return source;
+  const needsQuotes = text => !text.includes('"') && /[()]/.test(text);
+  const fixLine = (line, open, close) => {
+    let out = '', i = 0;
+    while (i < line.length) {
+      if (line[i] !== open) { out += line[i++]; continue; }
+      // `[(`, `[[` open a different node shape, not a plain label.
+      if (open === '[' && (line[i + 1] === '(' || line[i + 1] === '[')) { out += line[i++]; continue; }
+      const end = line.indexOf(close, i + 1);
+      if (end === -1) { out += line[i++]; continue; }
+      const label = line.slice(i + 1, end);
+      out += needsQuotes(label) ? `${open}"${label.trim()}"${close}` : line.slice(i, end + 1);
+      i = end + 1;
+    }
+    return out;
+  };
+  return source.split('\n').map(line => fixLine(fixLine(line, '|', '|'), '[', ']')).join('\n');
+}
+
+// Mermaid draws its own "Syntax error in text" card into the container and
+// throws, so diagrams are rendered one at a time: a diagram that still fails
+// after repair is replaced by its source instead of that card.
+async function renderDiagram(node) {
+  const source = node.dataset.mermaidSource;
+  const repaired = repairMermaid(source);
+  for (const candidate of repaired === source ? [source] : [source, repaired]) {
+    node.removeAttribute('data-processed');
+    node.textContent = candidate;
+    try {
+      await mermaid.run({ nodes: [node] });
+      if (!node.querySelector('.error-text')) { node.dataset.mermaidSource = candidate; return true; }
+    } catch (error) {
+      node.dataset.mermaidError = String(error?.message || error).slice(0, 300);
+    }
+  }
+  showDiagramFallback(node, source);
+  return false;
+}
+
+// Same shape as a code block, so the existing copy delegation works and the
+// diagram source stays readable and copyable.
+function showDiagramFallback(node, source) {
+  const wrapper = document.createElement('div');
+  wrapper.className = 'code-block-wrapper mermaid-fallback';
+  const header = document.createElement('div');
+  header.className = 'code-block-header';
+  const title = document.createElement('span');
+  title.className = 'text-[var(--text-muted)] uppercase font-mono';
+  title.textContent = 'mermaid 未渲染';
+  const hint = document.createElement('span');
+  hint.className = 'mermaid-fallback-hint';
+  hint.textContent = '标签含括号需加引号 · 节点 id 不能用 end · erDiagram 实体名用英文';
+  const button = document.createElement('button');
+  button.className = 'copy-code-btn text-[var(--text-muted)] hover:text-[var(--text-primary)] flex items-center gap-1 transition text-[10px]';
+  button.innerHTML = '<i data-lucide="copy" class="w-3 h-3"></i> 复制源码';
+  header.append(title, hint, button);
+  const pre = document.createElement('pre');
+  const code = document.createElement('code');
+  code.className = 'language-mermaid';
+  code.textContent = source;
+  pre.appendChild(code);
+  wrapper.append(header, pre);
+  node.replaceWith(wrapper);
+}
+
 // A diagram keeps the colors of the theme it was drawn in. Redraw the ones
 // drawn in another theme from the source kept on their container.
 async function redrawMermaid(root = document) {
   if (!window.mermaid) return;
   const theme = mermaidTheme();
   const nodes = Array.from(root.querySelectorAll('.mermaid[data-mermaid-source]')).filter(node => node.dataset.mermaidTheme !== theme);
-  if (!nodes.length) return;
   for (const node of nodes) {
-    node.removeAttribute('data-processed');
-    node.textContent = node.dataset.mermaidSource;
     node.dataset.mermaidTheme = theme;
+    await renderDiagram(node);
   }
-  try { await mermaid.run({ nodes }); } catch (error) { console.warn('Mermaid render error:', error); }
 }
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -1900,23 +1968,19 @@ async function postProcessArticle(article) {
     try { await loadMermaid(); } catch (error) { console.warn('Mermaid unavailable:', error); }
   }
   if (mermaidBlocks.length > 0 && window.mermaid) {
-    for (let i = 0; i < mermaidBlocks.length; i++) {
-      const block = mermaidBlocks[i];
+    for (const block of mermaidBlocks) {
       const code = block.textContent;
-      const pre = block.parentElement;
       const container = document.createElement('div');
       container.className = 'mermaid mermaid-box my-4 p-4 rounded-lg flex justify-center';
       // Kept so a theme switch can redraw the diagram from its source.
       container.dataset.mermaidSource = code;
       container.dataset.mermaidTheme = mermaidTheme();
       container.textContent = code;
-      pre.replaceWith(container);
+      block.parentElement.replaceWith(container);
     }
-    try {
-      // Only containers built here: sanitized answers cannot carry data attributes.
-      await mermaid.run({ nodes: Array.from(article.querySelectorAll('.mermaid[data-mermaid-source]')) });
-    } catch (e) {
-      console.warn('Mermaid render error:', e);
+    // Only containers built here: sanitized answers cannot carry data attributes.
+    for (const node of Array.from(article.querySelectorAll('.mermaid[data-mermaid-source]'))) {
+      await renderDiagram(node);
     }
   }
 

@@ -179,6 +179,25 @@ test('both themes keep small text and Mermaid diagrams readable, redrawing diagr
   }
 });
 
+test('a diagram Mermaid cannot parse keeps its source instead of an error card', async ({ page }) => {
+  await fixture(page);
+  const answer = [
+    '```mermaid\nflowchart TD\n  A[用户] --> B[getUser()]\n```',
+    '```mermaid\nflowchart TD\n  A[代码] --> B[理解]\n```',
+    '```mermaid\nerDiagram\n  用户 ||--o{ 订单 : 下单\n```'
+  ].join('\n\n');
+  await page.route('**/api/mentor/analyze', route => route.fulfill({ contentType: 'text/event-stream', body: stream(answer) }));
+  await page.goto('/');
+  await page.locator('#btn-walkthrough').click();
+  // Unquoted parentheses are repaired, so this diagram and the valid one both draw.
+  await expect(page.locator('.mermaid svg')).toHaveCount(2);
+  // Chinese entity names cannot be repaired: the source stays readable and copyable.
+  await expect(page.locator('.mermaid-fallback')).toHaveCount(1);
+  await expect(page.locator('.mermaid-fallback pre code')).toHaveText('erDiagram\n  用户 ||--o{ 订单 : 下单');
+  await expect(page.locator('.mermaid-fallback')).toContainText('mermaid 未渲染');
+  await expect(page.locator('.mermaid-fallback .copy-code-btn')).toHaveCount(1);
+});
+
 test('Keeper polling pauses while the page is hidden and refreshes on return', async ({ page }) => {
   await page.clock.install();
   await fixture(page);
