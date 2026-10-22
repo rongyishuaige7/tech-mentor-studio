@@ -416,3 +416,20 @@ test('selecting lines in the file viewer becomes a question quoting the file and
   await page.locator('#btn-ask-selection').click();
   await expect(page.locator('#mentor-input')).toHaveValue(/^关于 src\/app\.js:1-2：\n```javascript\nconst value = 1;/);
 });
+
+test('adding a folder opens it without rescanning every repository', async ({ page }) => {
+  await fixture(page);
+  let listCalls = 0;
+  page.on('request', request => { if (new URL(request.url()).pathname === '/api/repos') listCalls++; });
+  await page.route('**/api/repos/pick', route => route.fulfill({ json: { success: true, path: '/new-repo', repo: {
+    id: 'new-repo', name: 'NewRepo', path: '/new-repo', branch: 'main', dirtyCount: 0 } } }));
+  await page.route('**/api/repos/new-repo/commits', route => route.fulfill({ json: { success: true, presets: [], dirtyCount: 0, commits: [] } }));
+  await page.route('**/api/repos/new-repo/diff?*', route => route.fulfill({ json: { success: true, files: [], hasFacts: false } }));
+  await page.goto('/');
+  await expect(page.locator('#repo-select')).toHaveValue('fixture');
+  const before = listCalls;
+  await page.locator('#btn-add-repo').click();
+  await expect(page.locator('#active-repo-name')).toHaveText('NewRepo');
+  await expect(page.locator('#repo-select')).toHaveValue('new-repo');
+  expect(listCalls).toBe(before);
+});

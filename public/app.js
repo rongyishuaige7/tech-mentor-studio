@@ -934,6 +934,22 @@ window.selectRepoById = (id) => {
   if (repo) selectRepo(repo);
 };
 
+// The add endpoints return the repository they registered, so the page can open
+// it without waiting for a full rescan of every repository.
+function adoptRepo(data) {
+  const repo = data?.repo;
+  if (!repo?.id) {
+    loadRepos().then(() => {
+      const added = allRepos.find(item => item.path === data?.path);
+      if (added) selectRepo(added);
+    });
+    return;
+  }
+  allRepos = [repo, ...allRepos.filter(item => item.id !== repo.id)];
+  renderRepoOptions();
+  selectRepo(repo);
+}
+
 async function handleAddRepo() {
   const addBtn = document.getElementById('btn-add-repo');
   const originalHtml = addBtn ? addBtn.innerHTML : '';
@@ -954,11 +970,7 @@ async function handleAddRepo() {
       throw new Error(data.error || '添加项目失败');
     }
 
-    await loadRepos();
-    const added = allRepos.find(r => r.path === data.path);
-    if (added) {
-      selectRepo(added);
-    }
+    adoptRepo(data);
   } catch (err) {
     const fallback = confirm(`启动系统目录选择器失败 (${err.message})。\n\n是否切换为手动输入路径？`);
     if (fallback) {
@@ -985,11 +997,7 @@ async function handleAddRepoManual() {
     });
     const data = await res.json();
     if (!data.success) throw new Error(data.error);
-    await loadRepos();
-    const added = allRepos.find(r => r.path === data.path);
-    if (added) {
-      selectRepo(added);
-    }
+    adoptRepo(data);
   } catch (err) {
     alert(`添加失败: ${err.message}`);
   }

@@ -124,6 +124,17 @@ async function scanRepositories(refresh = false) {
   try { return await scanPending; } finally { scanPending = null; }
 }
 
+// Adding one repository must not throw away the whole scan cache: a rescan of
+// every repository takes seconds, while one summary takes milliseconds.
+function rememberRepo(repo, summary = {}) {
+  if (!scanCache) return;
+  const entry = { ...repo, name: path.basename(repo.path), ...summary };
+  const repos = scanCache.repos.filter(item => item.id !== entry.id);
+  repos.push(entry);
+  repos.sort((a, b) => Number(b.dirtyCount > 0) - Number(a.dirtyCount > 0) || a.name.localeCompare(b.name));
+  scanCache = { at: Date.now(), repos };
+}
+
 // ----------------- API 路由 -----------------
 
 app.get('/api/repos', async (req, res) => {
@@ -145,14 +156,18 @@ app.post('/api/repos/add', async (req, res) => {
       return res.status(400).json({ error: '指定目录不是有效的 Git 仓库' });
     }
 
-    targetPath = (await registry.register(targetPath)).path;
+    const registered = await registry.register(targetPath);
+    targetPath = registered.path;
     const list = getWatchlist();
     if (!list.includes(targetPath)) {
       list.push(targetPath);
       saveWatchlist(list);
     }
-    scanCache = null;
-    res.json({ success: true, path: targetPath });
+    let summary = {};
+    try { summary = await getRepoSummary(registered.path); } catch { summary = { branch: 'unknown', dirtyCount: 0 }; }
+    const repo = { ...registered, name: path.basename(registered.path), ...summary };
+    rememberRepo(repo, summary);
+    res.json({ success: true, path: targetPath, repo });
   } catch (err) {
     res.status(err.status || 500).json({ error: err.message });
   }
@@ -171,14 +186,18 @@ app.post('/api/repos/pick', async (req, res) => {
       return res.status(400).json({ success: false, error: `所选目录不是有效的 Git 仓库（未找到 .git 目录）: ${targetPath}` });
     }
 
-    targetPath = (await registry.register(targetPath)).path;
+    const registered = await registry.register(targetPath);
+    targetPath = registered.path;
     const list = getWatchlist();
     if (!list.includes(targetPath)) {
       list.push(targetPath);
       saveWatchlist(list);
     }
-    scanCache = null;
-    res.json({ success: true, path: targetPath });
+    let summary = {};
+    try { summary = await getRepoSummary(registered.path); } catch { summary = { branch: 'unknown', dirtyCount: 0 }; }
+    const repo = { ...registered, name: path.basename(registered.path), ...summary };
+    rememberRepo(repo, summary);
+    res.json({ success: true, path: targetPath, repo });
   } catch (err) {
     sendFailure(res, err, lifecycle, { unsupported: err.status === 501 });
   } finally {

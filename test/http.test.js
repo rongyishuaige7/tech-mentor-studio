@@ -222,3 +222,34 @@ test('the file routes list the working tree and return file contents', async t =
   assert.equal((await request(`/api/repos/${id}/file?path=../secret`)).status, 400);
   assert.equal((await request(`/api/repos/${id}/file`)).status, 400);
 });
+
+test('adding a repository updates the scan cache instead of rescanning everything', async t => {
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'mentor-add-'));
+  t.after(() => fs.rmSync(parent, { recursive: true, force: true }));
+  const git = (cwd, ...args) => execFileSync('git', ['-c', 'user.name=F', '-c', 'user.email=f@example.invalid', ...args], { cwd });
+  const makeRepo = name => {
+    const dir = path.join(parent, name);
+    fs.mkdirSync(dir); git(dir, 'init', '-q', '-b', 'main');
+    fs.writeFileSync(path.join(dir, 'a.js'), 'a\n');
+    git(dir, 'add', '-A'); git(dir, 'commit', '-qm', 'first');
+    return dir;
+  };
+  const first = makeRepo('first');
+  const { request } = await appFixture(t, first, { scanRoots: [parent], dataDir: path.join(parent, '.data') });
+  const initial = await (await request('/api/repos')).json();
+  assert.deepEqual(initial.repos.map(repo => repo.name), ['first']);
+
+  // A repository created after the scan is added through the route.
+  const second = makeRepo('second');
+  const added = await (await request('/api/repos/add', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ targetPath: second })
+  })).json();
+  assert.equal(added.success, true);
+  assert.equal(added.repo.name, 'second');
+  assert.equal(added.repo.branch, 'main');
+
+  const count = gitSpawnCounter(t);
+  const listed = await count(async () => (await request('/api/repos')).json());
+  assert.equal(listed.spawns, 0, `a cache hit started ${listed.spawns} git processes`);
+  assert.deepEqual(listed.result.repos.map(repo => repo.name).sort(), ['first', 'second']);
+});
