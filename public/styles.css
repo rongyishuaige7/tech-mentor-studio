@@ -377,7 +377,8 @@ body {
 .file-line { display: flex; gap: 10px; padding: 0 10px; }
 .file-line:hover { background: var(--bg-surface-hover); }
 .file-num { flex: none; width: 44px; text-align: right; color: var(--text-subtle); user-select: none; }
-.file-text { white-space: pre; min-width: 0; }
+/* 与 Diff 一致：长行折行显示，不出现横向滚动条 */
+.file-text { white-space: pre-wrap; word-break: break-all; min-width: 0; }
 .file-line.is-target { background: var(--diff-hunk-bg); }
 
 /* 整个项目概览：中栏是 diff 的 pre-wrap 容器，概览需要按正常换行排版 */

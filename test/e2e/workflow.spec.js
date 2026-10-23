@@ -433,3 +433,27 @@ test('adding a folder opens it without rescanning every repository', async ({ pa
   await expect(page.locator('#repo-select')).toHaveValue('new-repo');
   expect(listCalls).toBe(before);
 });
+
+test('long lines in the file viewer wrap instead of scrolling sideways', async ({ page }) => {
+  await fixture(page);
+  await page.route(/\/api\/repos\/[^/]+\/tree$/, route => route.fulfill({ json: { success: true, omitted: 0, files: [
+    { path: 'long.js', size: 600, tracked: true }
+  ] } }));
+  await page.route(/\/api\/repos\/[^/]+\/file\?.*/, route => route.fulfill({ json: { success: true, path: 'long.js',
+    text: `const value = '${'x'.repeat(400)}';\n`, lines: 1, bytes: 420 } }));
+  await page.goto('/');
+  await page.locator('#file-tree .tree-row[data-path="long.js"]').click();
+  await expect(page.locator('#file-content .file-line')).toHaveCount(1);
+  const metrics = await page.evaluate(() => {
+    const row = document.querySelector('#file-content .file-line');
+    const scroller = document.querySelector('#file-content').parentElement;
+    return {
+      whiteSpace: getComputedStyle(row.querySelector('.file-text')).whiteSpace,
+      overflow: scroller.scrollWidth - scroller.clientWidth,
+      height: Math.round(row.getBoundingClientRect().height)
+    };
+  });
+  expect(metrics.whiteSpace).toBe('pre-wrap');
+  expect(metrics.overflow).toBeLessThanOrEqual(1);
+  expect(metrics.height).toBeGreaterThan(20);
+});
