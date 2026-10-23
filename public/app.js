@@ -149,17 +149,29 @@ function persistSessions() {
       size += json.length;
     }
     localStorage.setItem(SESSIONS_KEY, JSON.stringify(data));
-  } catch { /* storage blocked or over quota: keep the in-memory copy */ }
+  } catch { warnStorageUnavailable(); }
 }
 
 function persistViewState() {
   if (!activeRepo) return;
   try {
     localStorage.setItem(VIEW_KEY, JSON.stringify({
-      repoId: activeRepo.id, target: activeTarget, view: currentView,
+      repoId: activeRepo.id,
+      // Enough to reopen the repository before the scan finishes.
+      repo: { id: activeRepo.id, name: activeRepo.name, path: activeRepo.path, branch: activeRepo.branch, dirtyCount: activeRepo.dirtyCount },
+      target: activeTarget, view: currentView,
       file: currentFilePath, focusFile: currentFocusFile, expanded: [...treeExpanded]
     }));
-  } catch { /* ignore */ }
+  } catch { warnStorageUnavailable(); }
+}
+
+// Storage can be blocked (private windows, "block all cookies") or full. Say so
+// once instead of silently losing the next reload's state.
+let storageWarningShown = false;
+function warnStorageUnavailable() {
+  if (storageWarningShown) return;
+  storageWarningShown = true;
+  showMentorNotice('浏览器存储不可用或已满：刷新后不会保留对话与查看位置');
 }
 
 function restorePersistedState() {
@@ -176,6 +188,7 @@ function restorePersistedState() {
     const raw = localStorage.getItem(VIEW_KEY);
     pendingView = raw ? JSON.parse(raw) : null;
   } catch { pendingView = null; }
+  return pendingView?.repo?.id && pendingView.repo.path ? pendingView.repo : null;
 }
 
 function restoreSession(saved) {
@@ -576,7 +589,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
   lucide.createIcons();
   setupEventListeners();
-  restorePersistedState();
+  // Reopen the last repository before the scan finishes, so a reload shows the
+  // file and the conversation immediately instead of an empty workbench.
+  const rememberedRepo = restorePersistedState();
+  if (rememberedRepo) selectRepo(rememberedRepo);
   loadModels();
   loadRepos();
   loadKeeperStats();
@@ -966,13 +982,15 @@ async function loadRepos(refresh = false) {
 
     if (sequence !== reposLoadSequence) return;
     allRepos = data.repos;
-    if (activeRepo) activeRepo = allRepos.find(repo => repo.id === activeRepo.id) || activeRepo;
+    const known = activeRepo ? allRepos.find(repo => repo.id === activeRepo.id) : null;
+    if (known) activeRepo = known;
     renderRepoOptions();
 
     const remembered = !activeRepo && pendingView?.repoId
       ? allRepos.find(repo => repo.id === pendingView.repoId) : null;
     if (remembered) selectRepo(remembered);
-    else if (allRepos.length > 0 && !activeRepo) selectRepo(allRepos[0]);
+    else if (!activeRepo && allRepos.length > 0) selectRepo(allRepos[0]);
+    else if (activeRepo && !known && allRepos.length > 0) selectRepo(allRepos[0]);
   } catch (err) {
     if (sequence === reposLoadSequence) select.innerHTML = `<option value="">加载仓库失败：${escapeHtml(err.message)}</option>`;
   } finally {
@@ -1086,6 +1104,8 @@ async function selectRepo(repo) {
   activeTarget = 'working-tree';
   activeRepo = repo;
   currentFocusFile = null;
+  if (!allRepos.some(item => item.id === repo.id)) allRepos = [repo, ...allRepos];
+  renderRepoOptions();
   clearMentorSession();
 
   const saved = lastRepoView.get(repo.id) || (pendingView?.repoId === repo.id ? pendingView : null);

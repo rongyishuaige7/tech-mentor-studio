@@ -479,3 +479,23 @@ test('a reload restores the repository, the open file, the tree state and the co
   await expect(page.locator('.mentor-prose')).toContainText('上次的回答内容');
   await expect(page.locator('#mentor-scope-text')).toContainText('讨论范围：app.js');
 });
+
+test('a reload shows the file before the repository scan finishes', async ({ page }) => {
+  await fixture(page);
+  await page.route('**/api/mentor/analyze', route => route.fulfill({ contentType: 'text/event-stream', body: stream('回答') }));
+  let slowList = false;
+  await page.route(/\/api\/repos(?:\?.*)?$/, async route => {
+    if (slowList) await new Promise(resolve => setTimeout(resolve, 1200));
+    await route.fallback();
+  });
+  await page.goto('/');
+  await page.locator('#file-tree .tree-row[data-kind="dir"]').first().click();
+  await page.locator('#file-tree .tree-row[data-path="src/app.js"]').click();
+  await expect(page.locator('#file-path-label')).toHaveText('src/app.js');
+
+  slowList = true;
+  await page.reload();
+  // The file and the picker come from storage, not from the slow scan.
+  await expect(page.locator('#file-path-label')).toHaveText('src/app.js', { timeout: 1000 });
+  await expect(page.locator('#repo-select')).toHaveValue('fixture', { timeout: 5000 });
+});

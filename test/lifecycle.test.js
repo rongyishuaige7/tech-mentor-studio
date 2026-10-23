@@ -496,7 +496,8 @@ test('the view and the conversation are written to storage for the next load', a
 
   run('persistViewState()');
   assert.deepEqual(JSON.parse(context.localStorage.getItem('mentor-view-v1')),
-    { repoId: 'B', target: 'HEAD', view: 'file', file: 'src/a.js', focusFile: null, expanded: ['src'] });
+    { repoId: 'B', repo: { id: 'B', name: 'B', path: '/repo/B' },
+      target: 'HEAD', view: 'file', file: 'src/a.js', focusFile: null, expanded: ['src'] });
 });
 
 test('a repository reopens its most recent conversation when the exact scope is gone', async () => {
