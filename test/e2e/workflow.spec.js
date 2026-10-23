@@ -457,3 +457,25 @@ test('long lines in the file viewer wrap instead of scrolling sideways', async (
   expect(metrics.overflow).toBeLessThanOrEqual(1);
   expect(metrics.height).toBeGreaterThan(20);
 });
+
+test('a reload restores the repository, the open file, the tree state and the conversation', async ({ page }) => {
+  await fixture(page);
+  await page.route('**/api/mentor/analyze', route => route.fulfill({ contentType: 'text/event-stream',
+    body: stream('上次的回答内容', { requestedTarget: 'file', focusFile: 'src/app.js', instruction: '核心代码实相' }) }));
+  await page.goto('/');
+  await page.locator('#file-tree .tree-row[data-kind="dir"]').first().click();
+  await page.locator('#file-tree .tree-row[data-path="src/app.js"]').click();
+  await expect(page.locator('#file-path-label')).toHaveText('src/app.js');
+  await page.locator('#btn-anatomy').click();
+  await expect(page.locator('.mentor-prose')).toContainText('上次的回答内容');
+
+  await page.reload();
+  await expect(page.locator('#active-repo-name')).toHaveText('Fixture');
+  await expect(page.locator('#repo-select')).toHaveValue('fixture');
+  await expect(page.locator('#file-path-label')).toHaveText('src/app.js');
+  await expect(page.locator('#file-content .file-line')).toHaveCount(2);
+  // The tree is still expanded where it was left.
+  await expect(page.locator('#file-tree .tree-row[data-path="src/app.js"]')).toBeVisible();
+  await expect(page.locator('.mentor-prose')).toContainText('上次的回答内容');
+  await expect(page.locator('#mentor-scope-text')).toContainText('讨论范围：app.js');
+});

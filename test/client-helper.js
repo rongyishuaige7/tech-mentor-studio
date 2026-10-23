@@ -36,7 +36,11 @@ export function loadClient(fetcher) {
       : fetcher(url, options), AbortController, TextDecoder, console,
     DOMPurify: { sanitize: x => x },
     marked: { parse: x => x }, lucide: { createIcons() {} }, hljs: {},
-    localStorage: { getItem() { return null; }, setItem() {} }, setTimeout, clearTimeout, alert() {}, navigator: {}
+    localStorage: (() => {
+      const store = new Map();
+      return { getItem: key => store.has(key) ? store.get(key) : null, setItem: (key, value) => store.set(key, String(value)),
+        removeItem: key => store.delete(key), clear: () => store.clear() };
+    })(), setTimeout, clearTimeout, alert() {}, navigator: {}
   });
   context.window = context;
   vm.runInContext(fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8'), context);

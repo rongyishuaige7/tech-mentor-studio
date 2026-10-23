@@ -59,8 +59,14 @@ function activeScopeFile() {
 // commit and back finds the discussion where it was left.
 const mentorSessions = new Map();
 const MAX_SAVED_SESSIONS = 30;
-const lastRepoView = new Map(); // repo id -> { target, viewFile }
+const lastRepoView = new Map(); // repo id -> { target, viewFile, view, file }
 const sessionKey = (repoId, target) => `${repoId}\n${target}`;
+// What a reload should bring back: the repository, the view, the open file and
+// the conversations. Storage is best-effort; the in-memory copy always works.
+const SESSIONS_KEY = 'mentor-sessions-v1';
+const VIEW_KEY = 'mentor-view-v1';
+const SESSION_BUDGET = 2000000;
+let pendingView = null;
 let pendingUndo = null;
 let undoTimer = null;
 const DIFF_PAGE_SIZE = 2000;
@@ -109,6 +115,7 @@ function captureSession() {
     mentorFocusFile,
     scopeKey: mentorScopeKey,
     scopeFile: mentorScope ? mentorScope.file : null,
+    savedAt: Date.now(),
     chatHtml
   };
 }
@@ -123,6 +130,52 @@ function saveCurrentSession() {
   mentorSessions.delete(key);
   mentorSessions.set(key, captureSession());
   while (mentorSessions.size > MAX_SAVED_SESSIONS) mentorSessions.delete(mentorSessions.keys().next().value);
+  persistSessions();
+}
+
+// Conversations are kept in localStorage so a refresh does not lose the
+// transcript. The newest conversations win when the budget is exceeded.
+function persistSessions() {
+  try {
+    const entries = [...mentorSessions.entries()]
+      .filter(([, saved]) => saved && Array.isArray(saved.conversationHistory) && saved.conversationHistory.length)
+      .sort((a, b) => (b[1].savedAt || 0) - (a[1].savedAt || 0));
+    const data = {};
+    let size = 0;
+    for (const [key, saved] of entries) {
+      const json = JSON.stringify(saved);
+      if (size + json.length > SESSION_BUDGET && Object.keys(data).length) break;
+      data[key] = saved;
+      size += json.length;
+    }
+    localStorage.setItem(SESSIONS_KEY, JSON.stringify(data));
+  } catch { /* storage blocked or over quota: keep the in-memory copy */ }
+}
+
+function persistViewState() {
+  if (!activeRepo) return;
+  try {
+    localStorage.setItem(VIEW_KEY, JSON.stringify({
+      repoId: activeRepo.id, target: activeTarget, view: currentView,
+      file: currentFilePath, focusFile: currentFocusFile, expanded: [...treeExpanded]
+    }));
+  } catch { /* ignore */ }
+}
+
+function restorePersistedState() {
+  try {
+    const raw = localStorage.getItem(SESSIONS_KEY);
+    const data = raw ? JSON.parse(raw) : null;
+    if (data && typeof data === 'object') {
+      for (const [key, saved] of Object.entries(data)) {
+        if (saved && Array.isArray(saved.conversationHistory)) mentorSessions.set(key, saved);
+      }
+    }
+  } catch { /* ignore */ }
+  try {
+    const raw = localStorage.getItem(VIEW_KEY);
+    pendingView = raw ? JSON.parse(raw) : null;
+  } catch { pendingView = null; }
 }
 
 function restoreSession(saved) {
@@ -155,6 +208,7 @@ function clearCurrentMentorSession({ undoable = true, notice = '已清空对话'
   const saved = undoable && conversationHistory.length ? captureSession() : null;
   const key = activeRepo ? sessionKey(activeRepo.id, mentorScopeKey || activeScopeKey()) : null;
   if (key) mentorSessions.delete(key);
+  persistSessions();
   clearMentorSession();
   if (saved && key) showMentorNotice(notice, { key, saved });
   else if (!undoable && notice) showMentorNotice(notice);
@@ -522,6 +576,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   lucide.createIcons();
   setupEventListeners();
+  restorePersistedState();
   loadModels();
   loadRepos();
   loadKeeperStats();
@@ -760,6 +815,7 @@ function setupEventListeners() {
     event.preventDefault();
     row.click();
   });
+  window.addEventListener('pagehide', () => { saveCurrentSession(); persistViewState(); });
   document.getElementById('btn-refresh').addEventListener('click', () => loadRepos(true));
   document.getElementById('btn-theme-toggle')?.addEventListener('click', toggleTheme);
   document.getElementById('btn-retry-models').addEventListener('click', loadModels);
@@ -913,7 +969,10 @@ async function loadRepos(refresh = false) {
     if (activeRepo) activeRepo = allRepos.find(repo => repo.id === activeRepo.id) || activeRepo;
     renderRepoOptions();
 
-    if (allRepos.length > 0 && !activeRepo) selectRepo(allRepos[0]);
+    const remembered = !activeRepo && pendingView?.repoId
+      ? allRepos.find(repo => repo.id === pendingView.repoId) : null;
+    if (remembered) selectRepo(remembered);
+    else if (allRepos.length > 0 && !activeRepo) selectRepo(allRepos[0]);
   } catch (err) {
     if (sequence === reposLoadSequence) select.innerHTML = `<option value="">加载仓库失败：${escapeHtml(err.message)}</option>`;
   } finally {
@@ -1029,7 +1088,7 @@ async function selectRepo(repo) {
   currentFocusFile = null;
   clearMentorSession();
 
-  const saved = lastRepoView.get(repo.id);
+  const saved = lastRepoView.get(repo.id) || (pendingView?.repoId === repo.id ? pendingView : null);
   currentView = saved?.view === 'diff' ? 'diff' : 'file';
   currentFilePath = saved?.file || null;
   currentFile = null;
@@ -1071,11 +1130,19 @@ async function selectRepo(repo) {
 
     activeTarget = target;
     currentFocusFile = viewFile;
-    restoreSession(mentorSessions.get(sessionKey(repo.id, activeScopeKey())));
+    // Prefer the conversation for what is on screen; if the view moved on since
+    // the last visit, reopen the most recent one for this repository instead of
+    // starting empty.
+    const exact = mentorSessions.get(sessionKey(repo.id, activeScopeKey()));
+    const recent = exact ? null : [...mentorSessions.entries()]
+      .filter(([key, saved]) => key.startsWith(`${repo.id}\n`) && saved.conversationHistory?.length)
+      .sort((a, b) => (b[1].savedAt || 0) - (a[1].savedAt || 0))[0]?.[1];
+    restoreSession(exact || recent);
     renderCommitPresets(currentPresets);
     renderCommitList(currentCommits);
     fetchDiff(repo.id, target);
     renderMentorScope();
+    persistViewState();
   } catch (err) {
     if (sequence !== repoRequestSequence || err.name === 'AbortError') return;
     commitListEl.innerHTML = `<div class="text-xs text-[var(--diff-del-text)] text-center py-4">读取提交失败: ${escapeHtml(err.message)}</div>`;
@@ -1194,6 +1261,7 @@ window.selectTarget = (targetHash) => {
   renderMentorScope();
   renderCommitPresets(currentPresets);
   renderCommitList(currentCommits);
+  persistViewState();
   return activeRepo ? fetchDiff(activeRepo.id, targetHash) : Promise.resolve();
 };
 
@@ -1219,6 +1287,7 @@ function switchView(view) {
   if (view === currentView) return;
   setView(view);
   renderMentorScope();
+  persistViewState();
 }
 
 const formatBytes = bytes => bytes < 1024 ? `${bytes}B` : bytes < 1048576 ? `${(bytes / 1024).toFixed(1)}k` : `${(bytes / 1048576).toFixed(1)}M`;
@@ -1244,7 +1313,7 @@ async function loadTree(repo, saved) {
     if (!data.success) throw new Error(data.error);
     if (sequence !== treeSequence || activeRepo?.id !== repo.id) return;
     treeFiles = data.files || [];
-    treeExpanded = new Set();
+    treeExpanded = new Set(Array.isArray(saved?.expanded) ? saved.expanded : []);
     treeFilter = '';
     document.getElementById('file-filter').value = '';
     document.getElementById('tree-stat').textContent = `${treeFiles.length} 个文件${data.omitted ? ` · 省略 ${data.omitted}` : ''}`;
@@ -1318,6 +1387,7 @@ function toggleTreeDir(path) {
   if (treeExpanded.has(path)) treeExpanded.delete(path); else treeExpanded.add(path);
   renderTree();
   [...document.querySelectorAll('#file-tree .tree-row')].find(row => row.dataset.path === path)?.focus();
+  persistViewState();
 }
 
 function markTreeSelection() {
@@ -1364,6 +1434,7 @@ function splitHighlightedLines(html) {
 async function openFile(filePath, { keepView = false } = {}) {
   if (!activeRepo) return;
   currentFilePath = filePath;
+  persistViewState();
   if (!keepView && currentView !== 'file') { currentView = 'file'; renderViewTabs(); }
   const sequence = ++fileSequence;
   filePage = 0;
@@ -1498,7 +1569,10 @@ async function fetchDiff(repoId, target) {
     currentDiffWarnings = data.warnings || [];
     const inDiff = path => currentDiffFiles.some(file => file.path === path);
     if (currentFocusFile && !inDiff(currentFocusFile)) currentFocusFile = null;
-    if (mentorScope?.file && !inDiff(mentorScope.file)) {
+    // Only a conversation that was pinned to a diff file depends on this list;
+    // a file-view or project conversation is unaffected by what the diff holds.
+    const diffScoped = mentorRequestedTarget && !['file', 'project'].includes(mentorRequestedTarget);
+    if (diffScoped && mentorScope?.file && !inDiff(mentorScope.file)) {
       // The conversation was about a file this selection no longer contains; do
       // not let follow-ups reuse a snapshot captured for it.
       clearCurrentMentorSession({ undoable: false, notice: `${mentorScope.file.split('/').pop()} 已不在当前改动中，相关对话已结束` });
@@ -2142,7 +2216,9 @@ async function startMentorAnalysis(mode, customPrompt = '', resetSession = false
           if (event.type === 'snapshot') {
             mentorSnapshotId = event.snapshotId;
             mentorResolvedTarget = event.resolvedTarget;
-            mentorRequestedTarget = typeof event.requestedTarget === 'string' ? event.requestedTarget : activeTarget;
+            // The server echoes the target it used; fall back to what this request
+            // asked for, not to whatever the diff panel happens to show.
+            mentorRequestedTarget = typeof event.requestedTarget === 'string' ? event.requestedTarget : scope.target;
             mentorFocusFile = typeof event.focusFile === 'string' ? event.focusFile : null;
             snapshotRenewed = renewing || Boolean(event.renewed);
             if (typeof event.instruction === 'string' && event.instruction) turnInstruction = event.instruction;

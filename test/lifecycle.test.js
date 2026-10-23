@@ -480,3 +480,44 @@ test('selected diff rows become a question quoting file, real lines and code', (
   assert.equal(quoted.split('\n').filter(line => line.startsWith('+line')).length, 119);
   assert.match(quoted, /已截取/);
 });
+
+test('the view and the conversation are written to storage for the next load', async () => {
+  const { context, run } = analyzeClient(call => answer(`snap-${call}`, `q${call}`));
+  run("currentView = 'file'; currentFilePath = 'src/a.js'; activeTarget = 'HEAD'; treeExpanded = new Set(['src'])");
+  await context.startMentorAnalysis('anatomy', '', true);
+
+  const sessions = JSON.parse(context.localStorage.getItem('mentor-sessions-v1'));
+  const key = Object.keys(sessions)[0];
+  assert.match(key, /file:src\/a\.js/);
+  assert.equal(sessions[key].conversationHistory.length, 2);
+  assert.equal(sessions[key].conversationHistory[1].content, 'answer-snap-1');
+  assert.equal(sessions[key].scopeKey, 'file:src/a.js');
+  assert.equal(typeof sessions[key].chatHtml, 'string');
+
+  run('persistViewState()');
+  assert.deepEqual(JSON.parse(context.localStorage.getItem('mentor-view-v1')),
+    { repoId: 'B', target: 'HEAD', view: 'file', file: 'src/a.js', focusFile: null, expanded: ['src'] });
+});
+
+test('a repository reopens its most recent conversation when the exact scope is gone', async () => {
+  const { context, get, run } = loadClient(url => {
+    if (url === '/api/repos/B/commits') return Promise.resolve({ json: async () => ({
+      success: true, presets: [], dirtyCount: 1,
+      commits: [{ hash: 'C1', shortHash: 'C1', msg: 'one', author: 'T', relTime: 'now' }]
+    }) });
+    if (url.includes('/api/repos/B/diff')) return Promise.resolve({ json: async () => ({ success: true, files: [] }) });
+    if (url.includes('/api/repos/B/tree')) return Promise.resolve({ json: async () => ({ success: true, files: [] }) });
+    return keeperResponse();
+  });
+  run("activeRepo = { id: 'A', name: 'A', path: '/repo/A' };"
+    + "lastRepoView.set('B', { target: 'C1', view: 'file', file: 'src/a.js' });"
+    + "mentorSessions.set(sessionKey('B', 'project'), { conversationHistory: [{ role: 'assistant', content: 'saved' }],"
+    + " mentorSnapshotId: 'snap', mentorResolvedTarget: 'C1', mentorRequestedTarget: 'project',"
+    + " scopeKey: 'project', scopeFile: null, savedAt: 10, chatHtml: '<div>saved</div>' })");
+  await context.selectRepo({ id: 'B', name: 'B', path: '/repo/B' });
+  await new Promise(resolve => setImmediate(resolve));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(get('conversationHistory.length'), 1);
+  assert.equal(get('mentorSnapshotId'), 'snap');
+  assert.equal(get('mentorScopeKey'), 'project');
+});
