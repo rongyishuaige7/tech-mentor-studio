@@ -900,7 +900,7 @@ function setupEventListeners() {
   document.getElementById('btn-scope-new').addEventListener('click', () => clearCurrentMentorSession({ notice: '已结束上一段对话' }));
   document.getElementById('btn-undo-clear').addEventListener('click', undoClearMentorSession);
 
-  // 在 Diff 中选中代码后浮出“就选中代码提问”
+  // 选中 Diff 或文件里的文字后浮出“就选中的内容提问”
   const askSelection = document.getElementById('btn-ask-selection');
   askSelection.addEventListener('mousedown', event => event.preventDefault());
   askSelection.addEventListener('click', askAboutSelection);

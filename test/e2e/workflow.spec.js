@@ -413,6 +413,7 @@ test('selecting lines in the file viewer becomes a question quoting the file and
     getSelection().addRange(range);
   });
   await expect(page.locator('#btn-ask-selection')).toBeVisible();
+  await expect(page.locator('#btn-ask-selection')).toContainText('就选中的内容提问');
   await page.locator('#btn-ask-selection').click();
   await expect(page.locator('#mentor-input')).toHaveValue(/^关于 src\/app\.js:1-2：\n```javascript\nconst value = 1;/);
 });
