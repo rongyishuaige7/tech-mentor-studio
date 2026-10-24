@@ -500,3 +500,50 @@ test('a reload shows the file before the repository scan finishes', async ({ pag
   await expect(page.locator('#file-path-label')).toHaveText('src/app.js', { timeout: 1000 });
   await expect(page.locator('#repo-select')).toHaveValue('fixture', { timeout: 5000 });
 });
+
+test('selected text can be saved as a note and read back from the library', async ({ page }) => {
+  await fixture(page);
+  const saved = [];
+  await page.route('**/api/notes', route => {
+    if (route.request().method() === 'POST') {
+      const body = route.request().postDataJSON();
+      const note = { id: `n${saved.length + 1}`, text: body.text, repo: body.repo, file: body.file,
+        from: body.from, to: body.to, createdAt: Date.now() };
+      saved.push(note);
+      return route.fulfill({ json: { success: true, note } });
+    }
+    return route.fulfill({ json: { success: true, notes: [...saved].reverse() } });
+  });
+  await page.route(/\/api\/notes\/[^/]+$/, route => {
+    const id = new URL(route.request().url()).pathname.split('/').pop();
+    const index = saved.findIndex(note => note.id === id);
+    if (index >= 0) saved.splice(index, 1);
+    return route.fulfill({ json: { success: index >= 0 } });
+  });
+
+  await page.goto('/');
+  await page.locator('#file-tree .tree-row[data-kind="dir"]').first().click();
+  await page.locator('#file-tree .tree-row[data-path="src/app.js"]').click();
+  await expect(page.locator('#file-content .file-line')).toHaveCount(2);
+  await page.evaluate(() => {
+    const rows = document.querySelectorAll('#file-content .file-line');
+    const range = document.createRange();
+    range.setStart(rows[0].querySelector('.file-text'), 0);
+    range.setEnd(rows[1].querySelector('.file-text'), 1);
+    getSelection().removeAllRanges();
+    getSelection().addRange(range);
+  });
+
+  await expect(page.locator('#selection-actions')).toBeVisible();
+  await page.locator('#btn-save-note').click();
+  await expect(page.locator('#notes-badge')).toHaveText('1');
+
+  await page.locator('#btn-notes').click();
+  await expect(page.locator('#notes-overlay')).toBeVisible();
+  await expect(page.locator('.note-text')).toContainText('const value = 1;');
+  await expect(page.locator('.note-source')).toContainText('src/app.js:1-2');
+
+  await page.locator('[data-note-action="delete"]').click();
+  await expect(page.locator('.notes-empty')).toBeVisible();
+  await expect(page.locator('#notes-badge')).toHaveText('0');
+});

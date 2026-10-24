@@ -589,6 +589,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
   lucide.createIcons();
   setupEventListeners();
+  setupNotesUi();
+  loadNotes();
   // Reopen the last repository before the scan finishes, so a reload shows the
   // file and the conversation immediately instead of an empty workbench.
   const rememberedRepo = restorePersistedState();
@@ -1965,23 +1967,27 @@ function fileSelectionPrompt(from, to) {
 }
 
 let selectionFrame = 0;
+function hideSelectionActions() {
+  document.getElementById('selection-actions')?.classList.add('hidden');
+}
+
 function updateAskSelection() {
   cancelAnimationFrame(selectionFrame);
   selectionFrame = requestAnimationFrame(() => {
-    const button = document.getElementById('btn-ask-selection');
+    const actions = document.getElementById('selection-actions');
     const selected = currentSelection();
-    if (!button) return;
-    if (!selected) { button.classList.add('hidden'); return; }
-    button.style.top = `${Math.min(innerHeight - 44, selected.rect.bottom + 6)}px`;
-    button.style.left = `${Math.max(8, Math.min(innerWidth - 170, selected.rect.left))}px`;
-    button.classList.remove('hidden');
+    if (!actions) return;
+    if (!selected) { actions.classList.add('hidden'); return; }
+    actions.style.top = `${Math.min(innerHeight - 44, selected.rect.bottom + 6)}px`;
+    actions.style.left = `${Math.max(8, Math.min(innerWidth - 280, selected.rect.left))}px`;
+    actions.classList.remove('hidden');
   });
 }
 
 function askAboutSelection() {
   const inDiff = selectedDiffRows();
   const selected = inDiff || selectedFileLines();
-  document.getElementById('btn-ask-selection')?.classList.add('hidden');
+  hideSelectionActions();
   if (!selected) return;
   const quote = inDiff ? selectionPrompt(selected.from, selected.to) : fileSelectionPrompt(selected.from, selected.to);
   if (!quote) return;
@@ -1992,6 +1998,132 @@ function askAboutSelection() {
   input.focus();
   input.setSelectionRange(input.value.length, input.value.length);
   resizePromptInput();
+}
+
+// ---- 笔记库：选中文字存下来，随时翻看 ----
+let notes = [];
+
+function noteSourceLabel(note) {
+  const repo = note.repo ? note.repo.split('/').pop() : '';
+  const lines = note.from ? `:${note.from}${note.to && note.to !== note.from ? `-${note.to}` : ''}` : '';
+  return [repo, note.file ? `${note.file}${lines}` : ''].filter(Boolean).join(' · ') || '未标注来源';
+}
+
+function renderNotesBadge() {
+  const badge = document.getElementById('notes-badge');
+  const count = document.getElementById('notes-count');
+  if (badge) badge.textContent = String(notes.length);
+  if (count) count.textContent = String(notes.length);
+}
+
+function renderNotes() {
+  const list = document.getElementById('notes-list');
+  if (!list) return;
+  if (!notes.length) {
+    list.innerHTML = '<div class="notes-empty">还没有笔记。在代码或文档里选中文字，点「存为笔记」。</div>';
+    return;
+  }
+  list.innerHTML = notes.map(note => `
+    <article class="note-item">
+      <header>
+        <span class="note-source" title="${escapeHtml(noteSourceLabel(note))}">${escapeHtml(noteSourceLabel(note))}</span>
+        <span>${new Date(note.createdAt).toLocaleString()}</span>
+        <button type="button" data-note-action="copy" data-id="${note.id}">复制</button>
+        <button type="button" data-note-action="delete" data-id="${note.id}">删除</button>
+      </header>
+      <pre class="note-text">${escapeHtml(note.text)}</pre>
+    </article>`).join('');
+}
+
+async function loadNotes() {
+  try {
+    const res = await apiFetch('/api/notes');
+    const data = await res.json();
+    if (!data.success) throw new Error(data.error);
+    notes = Array.isArray(data.notes) ? data.notes : [];
+    renderNotesBadge();
+    if (!document.getElementById('notes-overlay').classList.contains('hidden')) renderNotes();
+  } catch { /* keep the last known list */ }
+}
+
+function openNotes() {
+  const overlay = document.getElementById('notes-overlay');
+  if (!overlay) return;
+  overlay.classList.remove('hidden');
+  renderNotes();
+  document.getElementById('btn-close-notes')?.focus();
+  loadNotes();
+}
+
+function closeNotes() {
+  document.getElementById('notes-overlay')?.classList.add('hidden');
+  document.getElementById('btn-notes')?.focus();
+}
+
+// Where the selection came from, for the note's header.
+function selectionSource() {
+  const fileSel = selectedFileLines();
+  if (fileSel && currentFile) return { repo: activeRepo?.path || null, file: currentFile.path, from: fileSel.from, to: fileSel.to };
+  const diffSel = selectedDiffRows();
+  if (diffSel) {
+    for (const { file, start } of diffViewSegments()) {
+      const count = file.patch.split('\n').length;
+      if (diffSel.from >= start && diffSel.from < start + count) return { repo: activeRepo?.path || null, file: file.path, from: null, to: null };
+    }
+    return { repo: activeRepo?.path || null, file: currentFocusFile || null, from: null, to: null };
+  }
+  return { repo: activeRepo?.path || null };
+}
+
+async function saveSelectionAsNote() {
+  const text = window.getSelection?.()?.toString().trim();
+  if (!text) return;
+  const source = selectionSource();
+  hideSelectionActions();
+  try {
+    const res = await apiFetch('/api/notes', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text, ...source }) });
+    const data = await res.json();
+    if (!data.success) throw new Error(data.error);
+    notes = [data.note, ...notes];
+    renderNotesBadge();
+    showMentorNotice('已存为笔记');
+  } catch (error) {
+    alert(`保存笔记失败：${error.message}`);
+  }
+}
+
+async function handleNoteAction(action, id) {
+  const note = notes.find(item => item.id === id);
+  if (!note) return;
+  if (action === 'copy') {
+    try { await navigator.clipboard.writeText(note.text); } catch { alert('复制失败，请手动选择复制'); }
+    return;
+  }
+  if (action !== 'delete') return;
+  try {
+    const res = await apiFetch(`/api/notes/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    const data = await res.json();
+    if (!data.success) throw new Error(data.error);
+    notes = notes.filter(item => item.id !== id);
+    renderNotesBadge();
+    renderNotes();
+  } catch (error) { alert(`删除失败：${error.message}`); }
+}
+
+function setupNotesUi() {
+  document.getElementById('btn-notes').addEventListener('click', openNotes);
+  document.getElementById('btn-close-notes').addEventListener('click', closeNotes);
+  document.getElementById('btn-save-note').addEventListener('mousedown', event => event.preventDefault());
+  document.getElementById('btn-save-note').addEventListener('click', saveSelectionAsNote);
+  document.getElementById('notes-overlay').addEventListener('click', event => { if (event.target.id === 'notes-overlay') closeNotes(); });
+  document.getElementById('notes-list').addEventListener('click', event => {
+    const button = event.target.closest('[data-note-action]');
+    if (button) handleNoteAction(button.dataset.noteAction, button.dataset.id);
+  });
+  document.addEventListener('keydown', event => {
+    if (event.key === 'Escape' && !document.getElementById('notes-overlay').classList.contains('hidden')) closeNotes();
+  });
 }
 
 function resizePromptInput() {

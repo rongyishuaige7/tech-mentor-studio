@@ -253,3 +253,21 @@ test('adding a repository updates the scan cache instead of rescanning everythin
   assert.equal(listed.spawns, 0, `a cache hit started ${listed.spawns} git processes`);
   assert.deepEqual(listed.result.repos.map(repo => repo.name).sort(), ['first', 'second']);
 });
+
+test('notes can be created, listed and deleted through the API', async t => {
+  const { root } = gitFixture(t);
+  const { request } = await appFixture(t, root, { dataDir: path.join(root, '.git', 'mentor-notes-data') });
+  const created = await (await request('/api/notes', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text: '记住这一行', repo: root, file: 'a.js', from: 1, to: 2 }) })).json();
+  assert.equal(created.success, true);
+  assert.equal(created.note.text, '记住这一行');
+
+  const list = await (await request('/api/notes')).json();
+  assert.equal(list.notes.length, 1);
+  assert.equal(list.notes[0].file, 'a.js');
+
+  assert.equal((await (await request(`/api/notes/${created.note.id}`, { method: 'DELETE' })).json()).success, true);
+  assert.equal((await (await request('/api/notes')).json()).notes.length, 0);
+  assert.equal((await request('/api/notes/missing', { method: 'DELETE' })).status, 404);
+  assert.equal((await request('/api/notes', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: ' ' }) })).status, 400);
+});

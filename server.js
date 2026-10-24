@@ -2,6 +2,7 @@ import { getStatus, getCommits, getPresets, loadDiff, getRepoSummary } from './l
 import { hasProjectFacts } from './lib/facts.js';
 import { buildProjectOverview, renderProjectTree, renderImports, renderEndpoints } from './lib/project.js';
 import { listWorktreeFiles, readWorktreeFile } from './lib/files.js';
+import { NoteStore } from './lib/notes.js';
 import { mentorHandler } from './lib/mentor.js';
 import { localAccess, RepositoryRegistry, httpError, redactKnownSecret } from './lib/security.js';
 import express from 'express';
@@ -52,6 +53,7 @@ if (!fs.existsSync(DATA_DIR)) {
   fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
 }
 const WATCHLIST_FILE = path.join(DATA_DIR, 'watchlist.json');
+const noteStore = new NoteStore(path.join(DATA_DIR, 'notes.json'));
 
 function getWatchlist() {
   if (fs.existsSync(WATCHLIST_FILE)) {
@@ -273,6 +275,27 @@ app.get('/api/repos/:repoId/diff', async (req, res) => {
     res.json(redactKnownSecret({ ...data, repoPath, hasFacts: await hasProjectFacts(repoPath, data, options) }, config.proxyKey));
   } catch (error) { sendFailure(res, error, lifecycle); }
   finally { lifecycle.dispose(); }
+});
+
+app.get('/api/notes', (req, res) => {
+  res.json({ success: true, notes: noteStore.list() });
+});
+
+app.post('/api/notes', (req, res) => {
+  try {
+    res.json({ success: true, note: noteStore.add(req.body || {}) });
+  } catch (error) {
+    res.status(error.status || 400).json({ success: false, error: error.message });
+  }
+});
+
+app.delete('/api/notes/:noteId', (req, res) => {
+  try {
+    noteStore.remove(req.params.noteId);
+    res.json({ success: true });
+  } catch (error) {
+    res.status(error.status || 400).json({ success: false, error: error.message });
+  }
 });
 
 app.get('/api/models', async (req, res) => {

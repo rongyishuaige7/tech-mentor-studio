@@ -71,6 +71,11 @@
       <span id="model-status" class="text-[10px] text-[var(--text-muted)]" role="status"></span>
       <button id="btn-retry-models" class="text-xs text-[var(--accent-terracotta)] hover:opacity-80 transition" title="重新查询可用模型">重试模型</button>
 
+      <button id="btn-notes" class="p-1.5 rounded hover:bg-[var(--btn-action-hover)] text-[var(--text-muted)] hover:text-[var(--text-primary)] transition flex items-center gap-1" title="笔记库" aria-label="打开笔记库">
+        <i data-lucide="sticky-note" class="w-4 h-4"></i>
+        <span id="notes-badge" class="text-[10px] font-mono">0</span>
+      </button>
+
       <!-- 日夜模式切换按钮 -->
       <button id="btn-theme-toggle" class="p-1.5 rounded hover:bg-[var(--btn-action-hover)] text-[var(--text-muted)] hover:text-[var(--text-primary)] transition" title="切换日夜模式 (深色 / 浅色)" aria-label="切换日夜模式">
         <i data-lucide="sun" id="theme-icon-sun" class="w-4 h-4 hidden"></i>
@@ -299,9 +304,25 @@
 
   </main>
 
-  <button id="btn-ask-selection" type="button" class="ask-selection-btn hidden">
-    <i data-lucide="message-square-quote" class="w-3.5 h-3.5"></i> 就选中的内容提问
-  </button>
+  <div id="selection-actions" class="selection-actions hidden">
+    <button id="btn-ask-selection" type="button" class="ask-selection-btn">
+      <i data-lucide="message-square-quote" class="w-3.5 h-3.5"></i> 就选中的内容提问
+    </button>
+    <button id="btn-save-note" type="button" class="ask-selection-btn note-save-btn">
+      <i data-lucide="sticky-note" class="w-3.5 h-3.5"></i> 存为笔记
+    </button>
+  </div>
+
+  <!-- 笔记库 -->
+  <div id="notes-overlay" class="notes-overlay hidden">
+    <div class="notes-dialog" role="dialog" aria-modal="true" aria-labelledby="notes-title">
+      <header class="notes-header">
+        <h2 id="notes-title" class="text-sm font-semibold text-[var(--text-primary)]">笔记库 <span id="notes-count" class="text-[10px] font-mono text-[var(--text-muted)]">0</span></h2>
+        <button id="btn-close-notes" class="notes-close" aria-label="关闭笔记库">✕</button>
+      </header>
+      <div id="notes-list" class="notes-list"></div>
+    </div>
+  </div>
   <script defer src="/app.js"></script>
 </body>
 </html>
